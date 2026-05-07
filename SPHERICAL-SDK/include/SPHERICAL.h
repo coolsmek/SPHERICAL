@@ -19,11 +19,15 @@ namespace Spherical {
      * @brief Initialization parameters for the Spherical library
      */
     struct SphericalInitInfo {
+        VkInstance instance;                ///< Vulkan instance
         VkDevice device;                    ///< Vulkan device
         VkPhysicalDevice physicalDevice;    ///< Vulkan physical device
         VkQueue graphicsQueue;              ///< Graphics queue for rendering
+        VkCommandPool commandPool;          ///< Command pool used for rendering work
         uint32_t queueFamilyIndex;          ///< Queue family index
         VkFormat colorAttachmentFormat;     ///< Format for color attachments
+        VkImageView colorAttachmentView;     ///< Target image view for dynamic rendering
+        VkExtent2D framebufferExtent;       ///< Rendering extent for the target
         SDL_Window* window;                 ///< SDL3 window handle for input
     };
 
