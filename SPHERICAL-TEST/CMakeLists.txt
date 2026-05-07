@@ -1,0 +1,2 @@
+add_executable(SPHERICAL_Test main.cpp)
+target_link_libraries(SPHERICAL_Test PRIVATE Spherical)

@@ -1,0 +1,12 @@
+{
+  "name": "spherical",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "sdl3",
+    "vulkan-headers",
+    "vulkan-loader",
+    "nuklear",
+    "glm" 
+  ],
+  "builtin-baseline": "b8922ae57c61d4192a504bbb955d19599fa68f2a" 
+}
