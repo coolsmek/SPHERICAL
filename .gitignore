@@ -6,6 +6,11 @@
 *.swo
 *~
 .DS_Store
+*.pdb
+*.ilk
+*.obj
+*.exe
+*.dll
 
 # CMake and Build
 CMakeLists.txt.user
@@ -27,6 +32,7 @@ build/
 out/
 _deps/
 Testing/
+__cmake_systeminformation/
 
 # Generated Files
 install_manifest.txt
@@ -37,3 +43,6 @@ install_manifest.txt
 
 # Development
 dev-docs/
+
+#Nuklear
+SPHERICAL-SDK/include/nuklear.h

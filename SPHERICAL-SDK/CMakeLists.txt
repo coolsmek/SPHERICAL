@@ -5,8 +5,8 @@ find_package(Vulkan REQUIRED)
 find_package(Freetype REQUIRED)
 
 set(SPHERICAL_SHADER_SOURCES
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ui_triangle.vert
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ui_triangle.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ui_nuklear.vert
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ui_nuklear.frag
 )
 
 set(SPHERICAL_SHADER_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
@@ -29,6 +29,7 @@ add_custom_target(SphericalShaders DEPENDS ${SPHERICAL_SHADER_OUTPUTS})
 
 # Create Spherical library
 add_library(Spherical STATIC
+        src/NuklearImpl.cpp
         src/SPHERICAL.cpp
         src/VulkanRenderer.cpp
         src/FontRenderer.cpp
@@ -39,9 +40,14 @@ add_dependencies(Spherical SphericalShaders)
 
 # Set include directories for internal headers
 target_include_directories(Spherical PUBLIC include)
+target_include_directories(Spherical PRIVATE src)  # For nuklear_config.h
 
 target_compile_definitions(Spherical PRIVATE
         SPHERICAL_SHADER_DIR="${SPHERICAL_SHADER_OUTPUT_DIR}"
+)
+
+target_compile_options(Spherical PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/FS>
 )
 
 # Link external dependencies
@@ -51,3 +57,4 @@ target_link_libraries(Spherical PUBLIC
         Vulkan::Vulkan
         Freetype::Freetype
 )
+

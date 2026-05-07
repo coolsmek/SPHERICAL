@@ -45,6 +45,14 @@ namespace Spherical {
     void NewFrame();
     
     /**
+     * @brief Update the active render target for the current frame
+     * @param colorAttachmentView Current swapchain image view / color attachment
+     * @param framebufferExtent Current rendering extent
+     * @note Safe to call every frame before Render()
+     */
+    void SetRenderTarget(VkImageView colorAttachmentView, VkExtent2D framebufferExtent);
+
+    /**
      * @brief Render the UI to a Vulkan command buffer
      * @param cmd Command buffer to record rendering commands into
      * @note Safe to call even if Init() has not been called
