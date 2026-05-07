@@ -1,6 +1,10 @@
 @echo off
 setlocal
 
+rem build commands:
+rem .\build_all.bat Debug cmake-build-spherical_debug run
+rem .\build_all.bat Debug cmake-build-spherical_debug norun
+
 rem Usage:
 rem   build_all.bat [Config] [BuildDir] [RunMode]
 rem Example:
