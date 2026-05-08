@@ -47,6 +47,63 @@ namespace {
 
     BackendState g_backend;
 
+    // UI registration and implementation
+    Spherical::UIBuildFn g_uiBuildCallback = nullptr;
+
+    class UIPainterImpl : public Spherical::UIPainter {
+    private:
+        nk_context* m_ctx = nullptr;
+        VkExtent2D m_framebufferExtent{};
+
+    public:
+        UIPainterImpl(nk_context* ctx, VkExtent2D extent) : m_ctx(ctx), m_framebufferExtent(extent) {}
+
+        bool begin_panel(const char* title, int x, int y, int width, int height) override {
+            return nk_begin(m_ctx, title, nk_rect(x, y, width, height), NK_WINDOW_BORDER | NK_WINDOW_TITLE) != 0;
+        }
+
+        void end_panel() override {
+            nk_end(m_ctx);
+        }
+
+        void label(const char* text) override {
+            nk_layout_row_dynamic(m_ctx, 25, 1);
+            nk_label(m_ctx, text, NK_TEXT_LEFT);
+        }
+
+        void spacing() override {
+            nk_layout_row_dynamic(m_ctx, 10, 1);
+            nk_spacing(m_ctx, 1);
+        }
+
+        void slider_float(const char* label, float* value, float min, float max, float step) override {
+            nk_layout_row_dynamic(m_ctx, 25, 2);
+            nk_label(m_ctx, label, NK_TEXT_LEFT);
+            nk_slider_float(m_ctx, min, value, max, step);
+        }
+
+        bool button(const char* label) override {
+            nk_layout_row_dynamic(m_ctx, 30, 1);
+            return nk_button_label(m_ctx, label) != 0;
+        }
+
+        void text_input(const char* label, char* buffer, size_t bufferSize) override {
+            nk_layout_row_dynamic(m_ctx, 25, 1);
+            nk_label(m_ctx, label, NK_TEXT_LEFT);
+            nk_layout_row_dynamic(m_ctx, 25, 1);
+            nk_edit_string_zero_terminated(m_ctx, NK_EDIT_FIELD, buffer,
+                                           static_cast<int>(bufferSize), nk_filter_default);
+        }
+
+        uint32_t get_framebuffer_width() const override {
+            return m_framebufferExtent.width;
+        }
+
+        uint32_t get_framebuffer_height() const override {
+            return m_framebufferExtent.height;
+        }
+    };
+
     bool IsDeviceSuitable(VkPhysicalDevice device) {
         uint32_t queueFamilyCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
@@ -578,116 +635,11 @@ namespace Spherical {
             return;
         }
 
-        if (nk_begin(&ctx, "Control Panel", nk_rect(20, 20, 350, 550), NK_WINDOW_BORDER | NK_WINDOW_TITLE)) {
-            nk_layout_row_dynamic(&ctx, 25, 1);
-            {
-                char fps_label[64];
-                snprintf(fps_label, sizeof(fps_label), "FPS: %.1f", UIState::GetFPS());
-                nk_label(&ctx, fps_label, NK_TEXT_LEFT);
-            }
-
-            {
-                char mouse_label[64];
-                snprintf(mouse_label, sizeof(mouse_label), "Mouse: (%d, %d)", UIState::mouseX, UIState::mouseY);
-                nk_label(&ctx, mouse_label, NK_TEXT_LEFT);
-            }
-
-            {
-                char window_label[64];
-                snprintf(window_label, sizeof(window_label), "Window: %ux%u", framebufferExtent.width, framebufferExtent.height);
-                nk_label(&ctx, window_label, NK_TEXT_LEFT);
-            }
-
-            nk_layout_row_dynamic(&ctx, 10, 1);
-            nk_spacing(&ctx, 1);
-
-            nk_layout_row_dynamic(&ctx, 25, 2);
-            nk_label(&ctx, "R:", NK_TEXT_LEFT);
-            nk_slider_float(&ctx, 0.0f, &UIState::colorR, 1.0f, 0.01f);
-
-            nk_layout_row_dynamic(&ctx, 25, 2);
-            nk_label(&ctx, "G:", NK_TEXT_LEFT);
-            nk_slider_float(&ctx, 0.0f, &UIState::colorG, 1.0f, 0.01f);
-
-            nk_layout_row_dynamic(&ctx, 25, 2);
-            nk_label(&ctx, "B:", NK_TEXT_LEFT);
-            nk_slider_float(&ctx, 0.0f, &UIState::colorB, 1.0f, 0.01f);
-
-            {
-                char color_label[64];
-                snprintf(color_label, sizeof(color_label), "Color: (%.2f, %.2f, %.2f)", UIState::colorR, UIState::colorG, UIState::colorB);
-                nk_layout_row_dynamic(&ctx, 25, 1);
-                nk_label(&ctx, color_label, NK_TEXT_LEFT);
-            }
-
-            nk_layout_row_dynamic(&ctx, 10, 1);
-            nk_spacing(&ctx, 1);
-
-            nk_layout_row_dynamic(&ctx, 30, 1);
-            if (nk_button_label(&ctx, "Click Me")) {
-                UIState::clickCounter++;
-            }
-
-            {
-                char click_label[64];
-                snprintf(click_label, sizeof(click_label), "Clicks: %d", UIState::clickCounter);
-                nk_layout_row_dynamic(&ctx, 25, 1);
-                nk_label(&ctx, click_label, NK_TEXT_LEFT);
-            }
-
-            nk_layout_row_dynamic(&ctx, 10, 1);
-            nk_spacing(&ctx, 1);
-
-            nk_layout_row_dynamic(&ctx, 25, 1);
-            nk_label(&ctx, "Text Input:", NK_TEXT_LEFT);
-
-            nk_layout_row_dynamic(&ctx, 25, 1);
-            nk_edit_string_zero_terminated(&ctx, NK_EDIT_FIELD, UIState::textInput,
-                                           sizeof(UIState::textInput), nk_filter_default);
-
-            {
-                char text_label[128];
-                snprintf(text_label, sizeof(text_label), "Captured: %s", UIState::textInput);
-                nk_layout_row_dynamic(&ctx, 25, 1);
-                nk_label(&ctx, text_label, NK_TEXT_LEFT);
-            }
-
-            nk_layout_row_dynamic(&ctx, 10, 1);
-            nk_spacing(&ctx, 1);
-
-            nk_layout_row_dynamic(&ctx, 30, 1);
-            if (nk_button_label(&ctx, !UIState::isLoadingProject ? "Load Project" : "Loading...")) {
-                if (!UIState::isLoadingProject) {
-                    UIState::isLoadingProject = true;
-                    UIState::loadStartTime = std::chrono::high_resolution_clock::now();
-
-                    TaskRunner::Submit(
-                        []() {
-                            std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-                        },
-                        []() {
-                            UIState::isLoadingProject = false;
-                            UIState::projectsLoaded++;
-                        }
-                    );
-                }
-            }
-
-            {
-                char load_label[64];
-                if (UIState::isLoadingProject) {
-                    const auto elapsed = std::chrono::duration<double>(
-                        std::chrono::high_resolution_clock::now() - UIState::loadStartTime
-                    ).count();
-                    snprintf(load_label, sizeof(load_label), "Loading... (%.1fs)", elapsed);
-                } else {
-                    snprintf(load_label, sizeof(load_label), "Projects loaded: %d", UIState::projectsLoaded);
-                }
-                nk_layout_row_dynamic(&ctx, 25, 1);
-                nk_label(&ctx, load_label, NK_TEXT_LEFT);
-            }
+        // Call the registered UI build callback, or provide a default fallback
+        if (g_uiBuildCallback) {
+            UIPainterImpl painter(&ctx, framebufferExtent);
+            g_uiBuildCallback(painter);
         }
-        nk_end(&ctx);
 
         void* vertPtr = nullptr;
         void* indexPtr = nullptr;
@@ -1019,6 +971,11 @@ namespace Spherical {
         FontRenderer::Shutdown();
         VulkanRenderer::Shutdown();
         ShutdownBackend();
+        g_uiBuildCallback = nullptr;  // Release lambda captures and prevent stale callbacks on re-init
         initialized = false;
+    }
+
+    void RegisterUI(const UIBuildFn& callback) {
+        g_uiBuildCallback = callback;
     }
 }

@@ -1,10 +1,53 @@
 #include <iostream>
 #include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <array>
 #include <SDL3/SDL.h>
 #include "SPHERICAL.h"
 
 namespace {
     std::atomic_bool g_shouldQuit = false;
+
+    // App-owned UI state
+    struct AppUIState {
+        float colorR = 0.5f;
+        float colorG = 0.5f;
+        float colorB = 0.5f;
+        int clickCounter = 0;
+        char textInput[128] = "";
+        bool isLoadingProject = false;
+        int projectsLoaded = 0;
+        std::chrono::high_resolution_clock::time_point loadStartTime;
+        std::array<double, 60> frameTimes = {};
+        size_t frameIndex = 0;
+        std::chrono::high_resolution_clock::time_point lastFrameTime;
+        double frameTime = 0.0;
+
+        double GetFPS() const {
+            double totalMs = 0;
+            for (double t : frameTimes) {
+                totalMs += t;
+            }
+            double avgMs = totalMs / frameTimes.size();
+            return avgMs > 0 ? 1000.0 / avgMs : 0.0;
+        }
+
+        void UpdateFrameTime() {
+            const auto now = std::chrono::high_resolution_clock::now();
+            if (lastFrameTime.time_since_epoch().count() == 0) {
+                lastFrameTime = now;
+                return;
+            }
+
+            frameTime = std::chrono::duration<double, std::milli>(now - lastFrameTime).count();
+            lastFrameTime = now;
+            frameTimes[frameIndex] = frameTime;
+            frameIndex = (frameIndex + 1) % frameTimes.size();
+        }
+    };
+
+    AppUIState g_appUI;
 
     bool SDLCALL EventWatch(void* userdata, SDL_Event* event) {
         (void)userdata;
@@ -43,6 +86,99 @@ int main(int /*argc*/, char* /*argv*/[]) {
         return 1;
     }
 
+    // Register the UI build callback BEFORE initialization
+    Spherical::RegisterUI([](Spherical::UIPainter& ui) {
+        if (ui.begin_panel("Control Panel", 20, 20, 350, 550)) {
+            // FPS display
+            {
+                char fps_label[64];
+                snprintf(fps_label, sizeof(fps_label), "FPS: %.1f", g_appUI.GetFPS());
+                ui.label(fps_label);
+            }
+
+            // Mouse position
+            {
+                float mouseX = 0.0f, mouseY = 0.0f;
+                SDL_GetMouseState(&mouseX, &mouseY);
+                char mouse_label[128];
+                snprintf(mouse_label, sizeof(mouse_label), "Mouse: (%d, %d)",
+                         static_cast<int>(mouseX), static_cast<int>(mouseY));
+                ui.label(mouse_label);
+            }
+
+            // Window size
+            {
+                char window_label[64];
+                snprintf(window_label, sizeof(window_label), "Window: %ux%u",
+                         ui.get_framebuffer_width(), ui.get_framebuffer_height());
+                ui.label(window_label);
+            }
+
+            ui.spacing();
+
+            // Color sliders
+            ui.slider_float("R:", &g_appUI.colorR, 0.0f, 1.0f, 0.01f);
+            ui.slider_float("G:", &g_appUI.colorG, 0.0f, 1.0f, 0.01f);
+            ui.slider_float("B:", &g_appUI.colorB, 0.0f, 1.0f, 0.01f);
+
+            {
+                char color_label[64];
+                snprintf(color_label, sizeof(color_label), "Color: (%.2f, %.2f, %.2f)",
+                         g_appUI.colorR, g_appUI.colorG, g_appUI.colorB);
+                ui.label(color_label);
+            }
+
+            ui.spacing();
+
+            // Click counter button
+            if (ui.button("Click Me")) {
+                g_appUI.clickCounter++;
+            }
+
+            {
+                char click_label[64];
+                snprintf(click_label, sizeof(click_label), "Clicks: %d", g_appUI.clickCounter);
+                ui.label(click_label);
+            }
+
+            ui.spacing();
+
+            // Text input
+            ui.text_input("Text Input:", g_appUI.textInput, sizeof(g_appUI.textInput));
+
+            {
+                char text_label[256];
+                snprintf(text_label, sizeof(text_label), "Captured: %s", g_appUI.textInput);
+                ui.label(text_label);
+            }
+
+            ui.spacing();
+
+            // Load project button
+            if (ui.button(!g_appUI.isLoadingProject ? "Load Project" : "Loading...")) {
+                if (!g_appUI.isLoadingProject) {
+                    g_appUI.isLoadingProject = true;
+                    g_appUI.loadStartTime = std::chrono::high_resolution_clock::now();
+                    // TODO: Trigger async task via Spherical::TaskRunner in future
+                }
+            }
+
+            {
+                char load_label[64];
+                if (g_appUI.isLoadingProject) {
+                    const auto elapsed = std::chrono::duration<double>(
+                        std::chrono::high_resolution_clock::now() - g_appUI.loadStartTime
+                    ).count();
+                    snprintf(load_label, sizeof(load_label), "Loading... (%.1fs)", elapsed);
+                } else {
+                    snprintf(load_label, sizeof(load_label), "Projects loaded: %d", g_appUI.projectsLoaded);
+                }
+                ui.label(load_label);
+            }
+        }
+        ui.end_panel();  // Always call end_panel() — required even if begin_panel() returned false
+    });
+
     Spherical::SphericalInitInfo initInfo{};
     initInfo.window = window;
     initInfo.preferImmediatePresent = true;
@@ -58,6 +194,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     }
 
     while (!g_shouldQuit.load()) {
+        g_appUI.UpdateFrameTime();
         Spherical::NewFrame();
         Spherical::Render();
     }

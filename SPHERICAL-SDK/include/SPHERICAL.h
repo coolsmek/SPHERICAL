@@ -10,6 +10,7 @@
 
 #include <SDL3/SDL.h>
 #include <cstdint>
+#include "SphericalUI.h"
 
 namespace Spherical {
 

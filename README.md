@@ -88,7 +88,7 @@ In short: SPHERICAL is trying to be a foundation for **native-feeling, GPU-drive
 
 ## Current Status
 
-SPHERICAL is currently in a **fully functional prototype** stage with core rendering, input, text, background-task paths, and app-facing Vulkan abstraction implemented.
+SPHERICAL is currently in a **fully functional prototype** stage with core rendering, input, text, background-task paths, app-facing Vulkan abstraction, and **declarative UI API** implemented.
 
 ### ✅ Phases 1–6: Implemented
 
@@ -97,7 +97,7 @@ SPHERICAL is currently in a **fully functional prototype** stage with core rende
 - **Phase 2B**: FreeType SDF text rendering implemented; minor thin-stroke polish remains
 - **Phase 3**: SDL3 input mapping to Nuklear complete (mouse, keyboard, text input all interactive)
 - **Phase 4**: Task runner integrated (`std::thread` + main-thread completion polling)
-- **Phase 6**: SDK-owned Vulkan abstraction complete for app-facing GUI integration
+- **Phase 6**: **Declarative UI API** — Apps define UI via `Spherical::RegisterUI(callback)` without Vulkan/Nuklear knowledge; SDK translates to rendering
 
 ### Demo App Live & Functional
 
@@ -108,10 +108,11 @@ The demo renders an interactive control panel with:
   - ✅ Clickable button with counter
   - ✅ Text input field with echo display
   - ✅ All text rendered with the FreeType SDF atlas
+  - ✅ **UI defined entirely via `Spherical::UIPainter` in app code** (no hardcoding in SDK)
 
 ### Next Steps
 
-Phase 6 (SDK-owned Vulkan abstraction) is complete and integrated in the demo flow.  
+Phase 6 (SDK-owned Vulkan abstraction with declarative UI API) is complete and integrated in the demo flow.  
 **Phase 5 (Command Palette + Hover Animation) is now the next major feature block.**
 
 For detailed implementation status:
@@ -183,6 +184,79 @@ SPHERICAL treats Nuklear as the **UI authoring layer**, while Vulkan remains the
 ## Architecture Overview
 
 The project is currently organized around a small set of focused modules.
+
+### Application-Level vs. SDK-Level Separation
+
+SPHERICAL enforces a **clean separation of concerns** between application code and graphics infrastructure:
+
+#### Application Level (`SPHERICAL-TEST/main.cpp`)
+- Defines **what UI should be displayed** (windows, controls, layout, state management)
+- Uses **Vulkan-free, Nuklear-free API** via `Spherical::UIPainter`
+- Implements a **UI build callback** registered with `Spherical::RegisterUI(callback)`
+- Owns all **UI state** (slider values, text buffers, button flags, etc.)
+
+Example:
+```cpp
+Spherical::RegisterUI([](Spherical::UIPainter& ui) {
+    if (ui.begin_panel("My Panel", 20, 20, 300, 400)) {
+        ui.label("Hello, World!");
+        if (ui.button("Click Me")) { /* handle click */ }
+        ui.slider_float("Value:", &myVar, 0.0f, 1.0f, 0.01f);
+        ui.end_panel();
+    }
+});
+```
+
+#### SDK Level (`SPHERICAL-SDK`)
+- Takes the **application's UI definitions** and translates them to **Nuklear + Vulkan**
+- Manages **all Vulkan infrastructure** (instance, device, swapchain, command buffers, synchronization)
+- Owns **immediate-mode UI rendering** and vertex buffer conversion
+- Provides a clean lifecycle API: `Init()`, `NewFrame()`, `Render()`, `Shutdown()`
+
+This separation means:
+- ✅ **Apps never touch Vulkan or Nuklear** — they describe UI only
+- ✅ **SDK owns graphics complexity** — implementation details are hidden
+- ✅ **Future flexibility** — the SDK could swap Vulkan for DirectX/Metal/OpenGL without app changes
+- ✅ **Reusability** — any app can use Spherical SDK for its UI, regardless of domain
+
+### `SPHERICAL.h` Public API
+
+The new public lifecycle and UI entry points:
+
+- `Spherical::Init(SphericalInitInfo)` — Initialize the SDK with a window
+- `Spherical::NewFrame()` — Update input state from OS events
+- `Spherical::Render()` — Render (SDK handles Vulkan acquire/record/submit/present internally)
+- `Spherical::Shutdown()` — Cleanup
+- **`Spherical::RegisterUI(UIBuildFn callback)`** — Register the app's UI definition callback
+- `Spherical::UIPainter` — Abstract interface for UI authoring (labels, sliders, buttons, etc.)
+
+### Using the Declarative UI API
+
+Applications register a single UI build callback before calling `Spherical::Init()`. The callback is invoked every frame with a `UIPainter` object. Methods on the painter correspond to Nuklear widget calls, but apps never see Nuklear:
+
+```cpp
+Spherical::RegisterUI([](Spherical::UIPainter& ui) {
+    if (ui.begin_panel("Control Panel", 20, 20, 350, 550)) {
+        // Static labels
+        ui.label("Status: Ready");
+        
+        // Interactive controls
+        ui.slider_float("Intensity:", &intensity, 0.0f, 1.0f, 0.01f);
+        
+        // Buttons with immediate click detection
+        if (ui.button("Apply")) {
+            ApplySettings();
+        }
+        
+        // Text input
+        ui.text_input("Search:", searchBuffer, sizeof(searchBuffer));
+        
+        ui.end_panel();
+    }
+});
+
+Spherical::Init(initInfo);
+```
 
 ### `SPHERICAL-SDK`
 
