@@ -1,12 +1,10 @@
-find_package(Vulkan REQUIRED)
 find_package(SDL3 CONFIG REQUIRED)
 
 add_executable(SPHERICAL_Test main.cpp)
 target_include_directories(SPHERICAL_Test PRIVATE ${CMAKE_SOURCE_DIR}/SPHERICAL-SDK/include)
 target_link_libraries(SPHERICAL_Test PRIVATE 
     Spherical 
-    SDL3::SDL3 
-    Vulkan::Vulkan
+    SDL3::SDL3
 )
 
 add_custom_command(TARGET SPHERICAL_Test POST_BUILD

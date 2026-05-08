@@ -2,6 +2,8 @@
 
 **SPHERICAL** is a C++ GUI SDK prototype focused on building fast, responsive, desktop-style tooling UIs on top of **Vulkan 1.4 dynamic rendering**.
 
+> **Current milestone:** Phase 6 is complete. App-side GUI integration now uses `Spherical::*` calls without direct Vulkan orchestration in the consumer app.
+
 ---
 
 ### If you want to use SPHERICAL and build from source, here are some additional notes:
@@ -86,14 +88,16 @@ In short: SPHERICAL is trying to be a foundation for **native-feeling, GPU-drive
 
 ## Current Status
 
-SPHERICAL is currently in a **fully functional prototype** stage with all core rendering paths complete and runtime validated.
+SPHERICAL is currently in a **fully functional prototype** stage with core rendering, input, text, background-task paths, and app-facing Vulkan abstraction implemented.
 
-### ✅ Phases 1–3: Complete
+### ✅ Phases 1–6: Implemented
 
 - **Phase 1B**: Vulkan dynamic rendering pipeline (`vkCmdBeginRendering`) fully implemented
 - **Phase 2 (Base Atlas)**: FreeType font atlas baking and rendering working end-to-end
 - **Phase 2B**: FreeType SDF text rendering implemented; minor thin-stroke polish remains
 - **Phase 3**: SDL3 input mapping to Nuklear complete (mouse, keyboard, text input all interactive)
+- **Phase 4**: Task runner integrated (`std::thread` + main-thread completion polling)
+- **Phase 6**: SDK-owned Vulkan abstraction complete for app-facing GUI integration
 
 ### Demo App Live & Functional
 
@@ -107,7 +111,8 @@ The demo renders an interactive control panel with:
 
 ### Next Steps
 
-Phase 4 (Task Runner) is implemented in the SDK and wired into the demo flow; Phase 5 (Command Palette + Hover Animation) remains the next major feature block.
+Phase 6 (SDK-owned Vulkan abstraction) is complete and integrated in the demo flow.  
+**Phase 5 (Command Palette + Hover Animation) is now the next major feature block.**
 
 For detailed implementation status:
 
@@ -181,15 +186,16 @@ The project is currently organized around a small set of focused modules.
 
 ### `SPHERICAL-SDK`
 
-The SDK layer exposes the main lifecycle entry points:
+Current public lifecycle entry points:
 
 - `Spherical::Init(...)`
 - `Spherical::NewFrame()`
-- `Spherical::SetRenderTarget(...)`
-- `Spherical::Render(...)`
+- `Spherical::Render()`
 - `Spherical::Shutdown()`
 
-This is the public-facing integration surface the demo app uses.
+Legacy Vulkan-parameter integration calls are retained only as temporary compatibility shims during migration and are not part of the recommended app-facing path.
+
+This is the public-facing integration surface the demo app now uses.
 
 ### `VulkanRenderer`
 
@@ -225,12 +231,11 @@ Relevant files:
 
 The standalone demo application that validates the SDK end to end.
 
-It owns:
+Current state:
 
 - SDL window creation
-- Vulkan instance / device / swapchain / sync objects
-- the frame loop
-- per-frame render target selection
+- app loop ownership
+- SPHERICAL-only GUI integration (`Init/NewFrame/Render/Shutdown`)
 
 Relevant file:
 
@@ -240,26 +245,19 @@ Relevant file:
 
 ## Render Flow
 
-At a high level, each frame works like this:
+### Current app-facing flow
 
-1. Acquire a swapchain image
-2. Update the active render target for SPHERICAL
-3. Poll and forward input events into Nuklear
-4. Build the UI for the current frame
-5. Convert Nuklear commands into vertex/index buffers
-6. Begin Vulkan dynamic rendering
-7. Draw each Nuklear command with scissoring
-8. End rendering and present
+1. Host app runs window/app loop
+2. Host app calls `Spherical::NewFrame()`
+3. Host app calls `Spherical::Render()`
+4. SDK handles Vulkan acquire/record/submit/present for UI rendering
 
 Conceptually:
 
 ```cpp
 while (running) {
-	acquire_next_swapchain_image();
-	Spherical::SetRenderTarget(...);
-	Spherical::NewFrame();
-	Spherical::Render(cmd);
-	submit_and_present();
+    Spherical::NewFrame();
+    Spherical::Render();
 }
 ```
 
@@ -380,7 +378,13 @@ cmake --build .\cmake-build-spherical_debug --config Debug --target SPHERICAL_Te
 - [x] main-thread completion polling
 - [x] non-blocking "loading" workflows
 
-### Phase 5 — Command Palette + Hover Animation (Next Priority)
+### Phase 6 — SDK-Owned Vulkan Abstraction (COMPLETE)
+- [x] remove Vulkan requirements from app-facing GUI integration API
+- [x] deprecate `Spherical::SetRenderTarget(...)` in app integration path
+- [x] replace `Spherical::Render(VkCommandBuffer)` with app-facing no-Vulkan render call
+- [x] update demo app to no Vulkan calls for GUI integration
+
+### Phase 5 — Command Palette + Hover Animation (NEXT PRIORITY)
 - [ ] command palette popup (`Ctrl+P` triggered)
 - [ ] fuzzy search command registry
 - [ ] interaction polish / hover fades
@@ -429,9 +433,9 @@ This project is still evolving rapidly, so the internal structure may change whi
 
 If you are working in the repo, it helps to think in layers:
 
-1. **host app layer** — SDL window, Vulkan objects, swapchain, frame loop
-2. **SDK layer** — lifecycle + UI orchestration
-3. **renderer layer** — Vulkan pipeline + draw submission
+1. **host app layer** — windowing/app loop + SDK calls
+2. **SDK layer** — lifecycle + UI orchestration + internal Vulkan orchestration
+3. **renderer layer** — Vulkan pipeline + draw submission (internal)
 4. **font layer** — FreeType baking + texture upload + glyph metadata
 
 When debugging UI rendering issues, that separation is often the fastest way to localize the problem.
@@ -448,7 +452,6 @@ SPHERICAL is now a **fully functional prototype** demonstrating all core renderi
 - ✅ **Text rendering** with FreeType SDF-baked glyph atlas
 - ✅ **Input integration** with SDL3 and Nuklear
 
-**What's working now:** The demo app builds, runs, and renders an interactive control panel with visible text, responsive sliders, clickable buttons, and text input. All basic rendering, input, font, and background task paths are validated end-to-end.
+**What's working now:** The demo app builds, runs, and renders an interactive control panel with visible text, responsive sliders, clickable buttons, text input, and non-blocking background task behavior, using SPHERICAL-only app integration calls.
 
 **What's next:** Command palette for workflow, hover animations for polish, and optional MSDF refinement for even better scale-independence.
-
