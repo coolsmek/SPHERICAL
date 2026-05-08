@@ -33,6 +33,7 @@ add_library(Spherical STATIC
         src/SPHERICAL.cpp
         src/VulkanRenderer.cpp
         src/FontRenderer.cpp
+        src/TaskRunner.cpp
         include/SPHERICAL.h
 )
 
@@ -60,4 +61,3 @@ target_link_libraries(Spherical PUBLIC
         Vulkan::Vulkan
         Freetype::Freetype
 )
-

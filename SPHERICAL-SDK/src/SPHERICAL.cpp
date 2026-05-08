@@ -2,10 +2,12 @@
 #include "SPHERICAL.h"
 #include "VulkanRenderer.h"
 #include "FontRenderer.h"
+#include "TaskRunner.h"
 #include <algorithm>
 #include <vector>
 #include <cstring>
 #include <chrono>
+#include <thread>
 #include <array>
 #include <cstddef>
 #include <fstream>
@@ -45,6 +47,11 @@ namespace Spherical {
         static std::chrono::high_resolution_clock::time_point lastFrameTime;
         static std::array<double, 60> frameTimes = {};
         static size_t frameIndex = 0;
+        
+        // Task runner demo state
+        static bool isLoadingProject = false;
+        static int projectsLoaded = 0;
+        static std::chrono::high_resolution_clock::time_point loadStartTime;
         
         double GetFPS() {
             double totalMs = 0;
@@ -106,7 +113,7 @@ namespace Spherical {
         const char* fontPath = resolvedFontPath.empty() ? nullptr : resolvedFontPath.c_str();
         if (!FontRenderer::Init(info.device, info.physicalDevice, 
                                info.graphicsQueue, info.commandPool,
-                               fontPath, 24)) {
+                               fontPath, 64)) {
             VulkanRenderer::Shutdown();
             return false;
         }
@@ -142,6 +149,9 @@ namespace Spherical {
         
         // Initialize UI state
         UIState::lastFrameTime = std::chrono::high_resolution_clock::now();
+        
+        // Initialize task runner for non-blocking background work
+        TaskRunner::Init();
         
         initialized = true;
         return true;
@@ -258,6 +268,9 @@ namespace Spherical {
         }
         
         nk_input_end(&ctx);
+        
+        // Poll for completed background tasks and dispatch their callbacks on the main thread
+        TaskRunner::Poll();
     }
 
     void SetRenderTarget(VkImageView colorAttachmentView, VkExtent2D framebufferExtent) {
@@ -364,6 +377,46 @@ namespace Spherical {
                  nk_layout_row_dynamic(&ctx, 25, 1);
                  nk_label(&ctx, text_label, NK_TEXT_LEFT);
              }
+             
+             // Separator
+             nk_layout_row_dynamic(&ctx, 10, 1);
+             nk_spacing(&ctx, 1);
+             
+             // === Task Runner Demo Section ===
+             nk_layout_row_dynamic(&ctx, 30, 1);
+             if (nk_button_label(&ctx, !UIState::isLoadingProject ? "Load Project" : "Loading...")) {
+                 if (!UIState::isLoadingProject) {
+                     UIState::isLoadingProject = true;
+                     UIState::loadStartTime = std::chrono::high_resolution_clock::now();
+                     
+                     // Submit a 2-second fake project load to the task runner
+                     TaskRunner::Submit(
+                         []() {
+                             // Work function: runs on worker thread
+                             std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+                         },
+                         []() {
+                             // Completion callback: runs on main thread after work completes
+                             UIState::isLoadingProject = false;
+                             UIState::projectsLoaded++;
+                         }
+                     );
+                 }
+             }
+             
+             {
+                 char load_label[64];
+                 if (UIState::isLoadingProject) {
+                     auto elapsed = std::chrono::duration<double>(
+                         std::chrono::high_resolution_clock::now() - UIState::loadStartTime
+                     ).count();
+                     snprintf(load_label, sizeof(load_label), "Loading... (%.1fs)", elapsed);
+                 } else {
+                     snprintf(load_label, sizeof(load_label), "Projects loaded: %d", UIState::projectsLoaded);
+                 }
+                 nk_layout_row_dynamic(&ctx, 25, 1);
+                 nk_label(&ctx, load_label, NK_TEXT_LEFT);
+             }
          }
          nk_end(&ctx);
          
@@ -399,7 +452,7 @@ namespace Spherical {
 
          nk_draw_null_texture nullTexture{};
          nullTexture.texture = VulkanRenderer::GetNullTexture();
-         nullTexture.uv = nk_vec2(0.5f / 512.0f, 0.5f / 512.0f);
+         nullTexture.uv = nk_vec2(0.5f / 1024.0f, 0.5f / 512.0f);
          
          // Create convert config with fixed vertex layout
          nk_convert_config config{};
@@ -484,6 +537,7 @@ namespace Spherical {
         if (initialized) {
             nk_clear(&ctx);
         }
+        TaskRunner::Shutdown();
         FontRenderer::Shutdown();
         VulkanRenderer::Shutdown();
         initialized = false;
