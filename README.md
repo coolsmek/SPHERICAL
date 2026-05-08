@@ -18,7 +18,7 @@ This project uses the [Nuklear](https://github.com/immediate-mode-ui/nuklear) im
 To clone this repository along with the Nuklear submodule, use the `--recursive` flag:
 
 ```
-git clone --recursive [https://github.com/coolsmek/SPHERICAL.git](https://github.com/coolsmek/SPHERICAL.git)
+git clone --recursive https://github.com/coolsmek/SPHERICAL.git
 ```
 #### ALSO:
 - SPHERICAL uses vcpkg to manage its dependencies. See vcpkg.json for more info.
@@ -371,7 +371,7 @@ SPHERICAL/
 ├─ SPHERICAL-SDK/
 │  ├─ include/
 │  ├─ shaders/
-│  └─ src/
+│  ├─ src/
 │  └─ third_party/Nuklear    <-- submodule https://github.com/immediate-mode-ui/nuklear
 ├─ SPHERICAL-TEST/
 │  ├─ fonts/

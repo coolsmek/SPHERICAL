@@ -11,8 +11,59 @@
 // Include nuklear configuration and header
 #include "nuklear_config.h"
 #include <nuklear.h>
+#include <map>
 
 namespace {
+    constexpr float kReferenceDpi = 96.0f;
+    constexpr float kPointsPerInch = 72.0f;
+    
+    //Font sizes
+    constexpr float kRegularPointSize = 14.0f;
+    constexpr float kTitlePointSize = 16.0f;
+    
+    constexpr float kMinimumDpiScale = 1.0f;
+    constexpr float kMaximumDpiScale = 4.0f;
+    constexpr uint32_t kMinimumFontPixelSize = 8;
+    constexpr uint32_t kBaseAtlasWidth = 1024;
+    constexpr uint32_t kBaseAtlasHeight = 512;
+
+    float SanitizeDpiScale(float dpiScale) {
+        if (dpiScale <= 0.0f) {
+            return 1.0f;
+        }
+        if (dpiScale < kMinimumDpiScale) {
+            return kMinimumDpiScale;
+        }
+        if (dpiScale > kMaximumDpiScale) {
+            return kMaximumDpiScale;
+        }
+        return dpiScale;
+    }
+
+    uint32_t PointsToPixels(float points, float dpiScale) {
+        const float pixels = (points * (kReferenceDpi / kPointsPerInch)) * dpiScale;
+        return std::max(kMinimumFontPixelSize, static_cast<uint32_t>(std::lround(pixels)));
+    }
+
+    uint32_t NextPowerOfTwo(uint32_t value) {
+        if (value <= 1) {
+            return 1;
+        }
+
+        --value;
+        value |= value >> 1;
+        value |= value >> 2;
+        value |= value >> 4;
+        value |= value >> 8;
+        value |= value >> 16;
+        return value + 1;
+    }
+
+    uint32_t ComputeScaledAtlasDimension(uint32_t baseDimension, float dpiScale) {
+        const float scaledDimension = static_cast<float>(baseDimension) * std::max(1.0f, dpiScale);
+        return NextPowerOfTwo(static_cast<uint32_t>(std::ceil(scaledDimension)));
+    }
+
     // Per-glyph metrics stored after baking
     struct GlyphInfo {
         float u0, v0, u1, v1;  // Normalized UV rect in atlas [0..1]
@@ -39,10 +90,13 @@ namespace {
         VkCommandPool commandPool = VK_NULL_HANDLE;
         FontAtlas atlas{};
         
-        // Per-glyph metrics (ASCII 32-127 = 96 chars)
-        GlyphInfo glyphs[96] = {};
-        uint32_t fontSize = 32;
-        nk_user_font nkFont{};
+        // Store multiple font configurations (one per style)
+        std::map<Spherical::FontStyle, nk_user_font> fontHandles;
+        std::map<Spherical::FontStyle, std::vector<GlyphInfo>> glyphMetrics;
+        std::map<Spherical::FontStyle, uint32_t> fontSizes;
+        std::map<Spherical::FontStyle, Spherical::FontStyle> fontStyleKeys;
+        float dpiScale = 1.0f;
+
         bool nkFontReady = false;
     };
 
@@ -283,13 +337,25 @@ namespace {
 
     // Nuklear text width callback
     float NKTextWidthCallback(nk_handle handle, float height, const char* text, int len) {
-        float scale = height / static_cast<float>(g_fontState.fontSize);
+        if (handle.ptr == nullptr) return 0;
+
+        Spherical::FontStyle style = *static_cast<Spherical::FontStyle*>(handle.ptr);
+        auto sizeIt = g_fontState.fontSizes.find(style);
+        auto glyphIt = g_fontState.glyphMetrics.find(style);
+        if (sizeIt == g_fontState.fontSizes.end() || glyphIt == g_fontState.glyphMetrics.end() || glyphIt->second.empty()) {
+            return 0;
+        }
+
+        const uint32_t baseFontSize = sizeIt->second;
+        const auto& glyphs = glyphIt->second;
+
+        float scale = height / static_cast<float>(baseFontSize);
         float width = 0;
         for (int i = 0; i < len; i++) {
             unsigned char c = static_cast<unsigned char>(text[i]);
-            if (c < 32 || c > 127) continue;  // Skip non-ASCII
+            if (c < 32 || c > 127) continue;
             int glyphIdx = c - 32;
-            width += static_cast<float>(g_fontState.glyphs[glyphIdx].advanceWidth) * scale;
+            width += static_cast<float>(glyphs[glyphIdx].advanceWidth) * scale;
         }
         return width;
     }
@@ -297,13 +363,26 @@ namespace {
     // Nuklear glyph query callback
     void NKGlyphQueryCallback(nk_handle handle, float height,
                              struct nk_user_font_glyph* glyph, unsigned int codepoint, unsigned int nextCodepoint) {
+        (void)nextCodepoint;
         if (codepoint < 32 || codepoint > 127) {
-            codepoint = 32;  // Fallback for non-ASCII
+            codepoint = 32;
         }
 
+        if (glyph == nullptr || handle.ptr == nullptr) return;
+
+        Spherical::FontStyle style = *static_cast<Spherical::FontStyle*>(handle.ptr);
+        auto sizeIt = g_fontState.fontSizes.find(style);
+        auto glyphIt = g_fontState.glyphMetrics.find(style);
+        if (sizeIt == g_fontState.fontSizes.end() || glyphIt == g_fontState.glyphMetrics.end() || glyphIt->second.empty()) {
+            return;
+        }
+
+        const uint32_t baseFontSize = sizeIt->second;
+        const auto& glyphs = glyphIt->second;
+
         int glyphIdx = static_cast<int>(codepoint) - 32;
-        const GlyphInfo& info = g_fontState.glyphs[glyphIdx];
-        float scale = height / static_cast<float>(g_fontState.fontSize);
+        const GlyphInfo& info = glyphs[glyphIdx];
+        float scale = height / static_cast<float>(baseFontSize);
 
         glyph->width    = static_cast<float>(info.width) * scale;
         glyph->height   = static_cast<float>(info.height) * scale;
@@ -319,7 +398,7 @@ namespace Spherical {
 namespace FontRenderer {
     bool Init(VkDevice device, VkPhysicalDevice physicalDevice,
              VkQueue graphicsQueue, VkCommandPool commandPool,
-             const char* fontPath, uint32_t fontSize) {
+             const char* fontPath, float dpiScale) {
         if (device == VK_NULL_HANDLE || physicalDevice == VK_NULL_HANDLE ||
             graphicsQueue == VK_NULL_HANDLE || commandPool == VK_NULL_HANDLE) {
             return false;
@@ -333,7 +412,15 @@ namespace FontRenderer {
         g_fontState.physicalDevice = physicalDevice;
         g_fontState.graphicsQueue = graphicsQueue;
         g_fontState.commandPool = commandPool;
-        g_fontState.fontSize = fontSize;
+        g_fontState.dpiScale = SanitizeDpiScale(dpiScale);
+        g_fontState.atlas.width = ComputeScaledAtlasDimension(kBaseAtlasWidth, g_fontState.dpiScale);
+        g_fontState.atlas.height = ComputeScaledAtlasDimension(kBaseAtlasHeight, g_fontState.dpiScale);
+        
+        // Define our font styles in points and convert them to display-scaled pixels.
+        g_fontState.fontSizes = {
+            {FontStyle::Regular, PointsToPixels(kRegularPointSize, g_fontState.dpiScale)},
+            {FontStyle::Title, PointsToPixels(kTitlePointSize, g_fontState.dpiScale)}
+        };
 
         // Initialize FreeType
         if (FT_Init_FreeType(&g_ftLibrary) != 0) {
@@ -349,135 +436,84 @@ namespace FontRenderer {
             return false;
         }
 
-        FT_Set_Pixel_Sizes(fontFace, 0, fontSize);
-        const int fontAscent = static_cast<int>(fontFace->size->metrics.ascender >> 6);
-
-        // =================================================================
-        // BAKE GLYPHS: ASCII 32-127 into atlas with row-strip packing
-        // SDF path with per-glyph fallback to normal bitmap rendering.
-        // =================================================================
+        // BAKE GLYPHS for each font style
         const uint32_t ATLAS_W = g_fontState.atlas.width;
         const uint32_t ATLAS_H = g_fontState.atlas.height;
-        const uint32_t PAD = 8; // SDF needs extra spread around glyph edges.
+        std::vector<uint8_t> atlasBuffer(ATLAS_W * ATLAS_H, 0);
+        atlasBuffer[0] = 255; // Reserved white texel
 
-        std::vector<uint8_t> atlasBuffer(ATLAS_W * ATLAS_H, 0);  // Black background with reserved white texel at (0,0)
-        atlasBuffer[0] = 255;
-        
-        // Start cursor at PAD so the first glyph has the same SDF spread margin
-        // as every subsequent glyph (cursorX resets to PAD on each row wrap).
-        uint32_t cursorX = PAD, cursorY = PAD;
+        uint32_t cursorX = 8, cursorY = 8;
         uint32_t rowHeight = 0;
 
-        int sdfFallbackCount = 0;
-        for (int c = 32; c <= 127; c++) {
-            // FT_LOAD_NO_HINTING is required for SDF: hinting snaps outlines to
-            // the pixel grid which corrupts the continuous distance field and
-            // produces speck artifacts inside letter shapes.
-            if (FT_Load_Char(fontFace, c, FT_LOAD_NO_HINTING) != 0) {
-                continue;
-            }
+        for (const auto& fontEntry : g_fontState.fontSizes) {
+            const FontStyle style = fontEntry.first;
+            const uint32_t size = fontEntry.second;
+            g_fontState.glyphMetrics[style].resize(96);
+            
+            FT_Set_Pixel_Sizes(fontFace, 0, size);
+            const int fontAscent = static_cast<int>(fontFace->size->metrics.ascender >> 6);
 
-            FT_GlyphSlot glyph = fontFace->glyph;
+            for (int c = 32; c <= 127; c++) {
+                if (FT_Load_Char(fontFace, c, FT_LOAD_NO_HINTING) != 0) continue;
+                
+                bool isSDF = (FT_Render_Glyph(fontFace->glyph, FT_RENDER_MODE_SDF) == 0);
+                if (!isSDF) {
+                    if (FT_Load_Char(fontFace, c, FT_LOAD_NO_HINTING | FT_LOAD_RENDER) != 0) continue;
+                }
 
-            // Attempt SDF render. If it fails for this glyph (e.g. empty outline
-            // for space), fall back to SDF-safe binary: rethreshold grayscale to
-            // 0 or 255 so the fragment shader's smoothstep sees only hard values,
-            // never the mid-range grayscale AA band that causes speck artifacts.
-            bool isSDF = (FT_Render_Glyph(glyph, FT_RENDER_MODE_SDF) == 0);
-            if (!isSDF) {
-                sdfFallbackCount++;
-                if (FT_Load_Char(fontFace, c, FT_LOAD_NO_HINTING | FT_LOAD_RENDER) != 0) {
+                FT_Bitmap& bitmap = fontFace->glyph->bitmap;
+                uint32_t glyphW = bitmap.width;
+                uint32_t glyphH = bitmap.rows;
+
+                if (cursorX + glyphW + 8 >= ATLAS_W) {
+                    cursorX = 8;
+                    cursorY += rowHeight + 8;
+                    rowHeight = 0;
+                }
+                if (cursorY + glyphH + 8 >= ATLAS_H) {
+                    fprintf(stderr, "[FontRenderer] Atlas overflow\n");
                     continue;
                 }
-                glyph = fontFace->glyph;
-            }
 
-            FT_Bitmap& bitmap = glyph->bitmap;
-
-            uint32_t glyphW = bitmap.width;
-            uint32_t glyphH = bitmap.rows;
-            int bearingX = glyph->bitmap_left;
-            int bearingY = glyph->bitmap_top;
-            int advanceX = static_cast<int>(glyph->advance.x >> 6);
-
-            // Wrap to next row if needed
-            if (cursorX + glyphW + PAD >= ATLAS_W) {
-                cursorX = PAD;
-                cursorY += rowHeight + PAD;
-                rowHeight = 0;
-            }
-
-            // Skip if would exceed bounds
-            if (cursorY + glyphH + PAD >= ATLAS_H) {
-                fprintf(stderr, "[FontRenderer] Warning: atlas overflow at glyph '%c' (U+%04X); glyph dropped\n", c, c);
-                continue;
-            }
-
-            // Copy glyph bitmap into atlas at the packed rectangle origin.
-            // Fallback (non-SDF) glyphs are binarised to 0/255 so the fragment
-            // shader's smoothstep never sees mid-range grayscale AA values, which
-            // would appear as semi-transparent speck pixels.
-            for (uint32_t y = 0; y < glyphH; y++) {
-                for (uint32_t x = 0; x < glyphW; x++) {
-                    uint8_t pixel = bitmap.buffer[y * bitmap.pitch + x];
-                    if (!isSDF) {
-                        pixel = (pixel >= 128) ? 255 : 0;  // binarise fallback
-                    }
-                    uint32_t atlasX = cursorX + x;
-                    uint32_t atlasY = cursorY + y;
-                    if (atlasX < ATLAS_W && atlasY < ATLAS_H) {
-                        atlasBuffer[atlasY * ATLAS_W + atlasX] = pixel;
+                for (uint32_t y = 0; y < glyphH; y++) {
+                    for (uint32_t x = 0; x < glyphW; x++) {
+                        uint8_t pixel = bitmap.buffer[y * bitmap.pitch + x];
+                        if (!isSDF) pixel = (pixel >= 128) ? 255 : 0;
+                        atlasBuffer[(cursorY + y) * ATLAS_W + (cursorX + x)] = pixel;
                     }
                 }
+
+                int glyphIdx = c - 32;
+                auto& glyphInfo = g_fontState.glyphMetrics[style][glyphIdx];
+                glyphInfo.u0 = (static_cast<float>(cursorX) + 0.5f) / static_cast<float>(ATLAS_W);
+                glyphInfo.v0 = (static_cast<float>(cursorY) + 0.5f) / static_cast<float>(ATLAS_H);
+                glyphInfo.u1 = (static_cast<float>(cursorX + glyphW) - 0.5f) / static_cast<float>(ATLAS_W);
+                glyphInfo.v1 = (static_cast<float>(cursorY + glyphH) - 0.5f) / static_cast<float>(ATLAS_H);
+                glyphInfo.advanceWidth = static_cast<int>(fontFace->glyph->advance.x >> 6);
+                glyphInfo.offsetX = fontFace->glyph->bitmap_left;
+                glyphInfo.offsetY = fontAscent - fontFace->glyph->bitmap_top;
+                glyphInfo.width = static_cast<int>(glyphW);
+                glyphInfo.height = static_cast<int>(glyphH);
+
+                cursorX += glyphW + 8;
+                rowHeight = std::max(rowHeight, glyphH);
             }
-
-            // Store metrics for Nuklear's nk_user_font_glyph callback.
-            // Half-pixel inset: Vulkan texel centers are at (i + 0.5) / size.
-            // Storing edge UVs (i / size) causes bilinear sampling to blend 50%
-            // of the glyph texel with 50% of the neighbouring padding (SDF = 0),
-            // dragging edge values below the 0.5 threshold -> transparent gap.
-            int glyphIdx = c - 32;
-            g_fontState.glyphs[glyphIdx].u0 = (static_cast<float>(cursorX) + 0.5f) / static_cast<float>(ATLAS_W);
-            g_fontState.glyphs[glyphIdx].v0 = (static_cast<float>(cursorY) + 0.5f) / static_cast<float>(ATLAS_H);
-            g_fontState.glyphs[glyphIdx].u1 = (static_cast<float>(cursorX + glyphW) - 0.5f) / static_cast<float>(ATLAS_W);
-            g_fontState.glyphs[glyphIdx].v1 = (static_cast<float>(cursorY + glyphH) - 0.5f) / static_cast<float>(ATLAS_H);
-            g_fontState.glyphs[glyphIdx].advanceWidth = advanceX;
-            g_fontState.glyphs[glyphIdx].offsetX = bearingX;
-            g_fontState.glyphs[glyphIdx].offsetY = fontAscent - bearingY;
-            g_fontState.glyphs[glyphIdx].width = static_cast<int>(glyphW);
-            g_fontState.glyphs[glyphIdx].height = static_cast<int>(glyphH);
-
-            cursorX += glyphW + PAD;
-            rowHeight = std::max(rowHeight, glyphH);
-        }
-
-        if (sdfFallbackCount > 0) {
-            fprintf(stderr, "[FontRenderer] SDF bake: %d/%d glyphs used bitmap fallback (expected: only space + zero-outline chars)\n",
-                    sdfFallbackCount, 127 - 32 + 1);
         }
 
         FT_Done_Face(fontFace);
 
-        // Create atlas image
-        if (!CreateImage(g_fontState.atlas.image, g_fontState.atlas.memory,
-                        g_fontState.atlas.width, g_fontState.atlas.height)) {
-            FT_Done_FreeType(g_ftLibrary);
-            g_ftLibrary = nullptr;
-            return false;
+        // Create and upload atlas image (same as before)
+        if (!CreateImage(g_fontState.atlas.image, g_fontState.atlas.memory, ATLAS_W, ATLAS_H)) {
+            FT_Done_FreeType(g_ftLibrary); g_ftLibrary = nullptr; return false;
         }
-
-        // Upload baked atlas buffer through staging buffer into an optimal tiled sampled image
+        
         VkBuffer stagingBuffer = VK_NULL_HANDLE;
         VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
         const VkDeviceSize atlasBufferSize = static_cast<VkDeviceSize>(atlasBuffer.size());
-        if (!CreateBuffer(stagingBuffer, stagingMemory, atlasBufferSize,
-                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        if (!CreateBuffer(stagingBuffer, stagingMemory, atlasBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
             vkFreeMemory(g_fontState.device, g_fontState.atlas.memory, nullptr);
             vkDestroyImage(g_fontState.device, g_fontState.atlas.image, nullptr);
-            FT_Done_FreeType(g_ftLibrary);
-            g_ftLibrary = nullptr;
-            return false;
+            FT_Done_FreeType(g_ftLibrary); g_ftLibrary = nullptr; return false;
         }
 
         void* mappedMemory = nullptr;
@@ -488,51 +524,58 @@ namespace FontRenderer {
             DestroyBuffer(stagingBuffer, stagingMemory);
             vkFreeMemory(g_fontState.device, g_fontState.atlas.memory, nullptr);
             vkDestroyImage(g_fontState.device, g_fontState.atlas.image, nullptr);
-            FT_Done_FreeType(g_ftLibrary);
-            g_ftLibrary = nullptr;
-            return false;
+            FT_Done_FreeType(g_ftLibrary); g_ftLibrary = nullptr; return false;
         }
 
         if (!TransitionImageLayout(g_fontState.atlas.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) ||
-            !CopyBufferToImage(stagingBuffer, g_fontState.atlas.image, g_fontState.atlas.width, g_fontState.atlas.height) ||
+            !CopyBufferToImage(stagingBuffer, g_fontState.atlas.image, ATLAS_W, ATLAS_H) ||
             !TransitionImageLayout(g_fontState.atlas.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
             DestroyBuffer(stagingBuffer, stagingMemory);
             vkFreeMemory(g_fontState.device, g_fontState.atlas.memory, nullptr);
             vkDestroyImage(g_fontState.device, g_fontState.atlas.image, nullptr);
-            FT_Done_FreeType(g_ftLibrary);
-            g_ftLibrary = nullptr;
-            return false;
+            FT_Done_FreeType(g_ftLibrary); g_ftLibrary = nullptr; return false;
         }
         g_fontState.atlas.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         DestroyBuffer(stagingBuffer, stagingMemory);
 
-        // Create image view after upload/transition
         if (!CreateImageView(g_fontState.atlas.imageView, g_fontState.atlas.image)) {
             vkFreeMemory(g_fontState.device, g_fontState.atlas.memory, nullptr);
             vkDestroyImage(g_fontState.device, g_fontState.atlas.image, nullptr);
-            FT_Done_FreeType(g_ftLibrary);
-            g_ftLibrary = nullptr;
-            return false;
+            FT_Done_FreeType(g_ftLibrary); g_ftLibrary = nullptr; return false;
         }
 
-        g_fontState.nkFont = {};
-        // Bake at a higher resolution for SDF quality, but keep UI text size stable.
-        g_fontState.nkFont.height = 24.0f;
-        g_fontState.nkFont.width = NKTextWidthCallback;
-        g_fontState.nkFont.query = NKGlyphQueryCallback;
-        g_fontState.nkFont.texture = nk_handle_ptr(g_fontState.atlas.imageView);
-        g_fontState.nkFont.userdata = nk_handle_ptr(nullptr);
+        // Create nk_user_font for each style
+        for (const auto& fontEntry : g_fontState.fontSizes) {
+            const FontStyle style = fontEntry.first;
+            const uint32_t size = fontEntry.second;
+            auto& font = g_fontState.fontHandles[style];
+            g_fontState.fontStyleKeys[style] = style;
+            font.height = static_cast<float>(size);
+            font.width = NKTextWidthCallback;
+            font.query = NKGlyphQueryCallback;
+            font.texture = nk_handle_ptr(g_fontState.atlas.imageView);
+            // Store a pointer to stable per-style state so callbacks can identify the glyph set.
+            font.userdata.ptr = &g_fontState.fontStyleKeys[style];
+        }
         g_fontState.nkFontReady = true;
 
         g_fontState.initialized = true;
         return true;
     }
 
-    struct nk_user_font* GetFontHandle() {
+    struct nk_user_font* GetFontHandle(FontStyle style) {
         if (!g_fontState.initialized || !g_fontState.nkFontReady) {
             return nullptr;
         }
-        return &g_fontState.nkFont;
+        auto it = g_fontState.fontHandles.find(style);
+        if (it == g_fontState.fontHandles.end()) {
+            // Fallback to regular if the requested style doesn't exist
+            it = g_fontState.fontHandles.find(FontStyle::Regular);
+            if (it == g_fontState.fontHandles.end()) {
+                return nullptr;
+            }
+        }
+        return &it->second;
     }
 
     VkImageView GetAtlasImageView() {

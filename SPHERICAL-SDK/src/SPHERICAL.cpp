@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <vector>
 #include <cstring>
+#include <cmath>
 #include <chrono>
 #include <thread>
 #include <array>
@@ -50,16 +51,58 @@ namespace {
     // UI registration and implementation
     Spherical::UIBuildFn g_uiBuildCallback = nullptr;
 
+    float GetWindowDisplayScale(SDL_Window* window) {
+        if (window == nullptr) {
+            return 1.0f;
+        }
+
+        const float scale = SDL_GetWindowDisplayScale(window);
+        return scale > 0.0f ? scale : 1.0f;
+    }
+
     class UIPainterImpl : public Spherical::UIPainter {
     private:
         nk_context* m_ctx = nullptr;
         VkExtent2D m_framebufferExtent{};
 
+        float current_font_height() const {
+            if (m_ctx != nullptr && m_ctx->style.font != nullptr) {
+                return m_ctx->style.font->height;
+            }
+
+            if (nk_user_font* defaultFont = Spherical::FontRenderer::GetFontHandle(Spherical::FontStyle::Regular)) {
+                return defaultFont->height;
+            }
+
+            return 12.0f;
+        }
+
+        float label_row_height() const {
+            return std::ceil(current_font_height() * 1.8f);
+        }
+
+        float control_row_height() const {
+            return std::ceil(current_font_height() * 2.0f);
+        }
+
+        float button_row_height() const {
+            return std::ceil(current_font_height() * 2.25f);
+        }
+
+        float spacing_row_height() const {
+            return std::max(4.0f, std::ceil(current_font_height() * 0.8f));
+        }
+
     public:
         UIPainterImpl(nk_context* ctx, VkExtent2D extent) : m_ctx(ctx), m_framebufferExtent(extent) {}
 
         bool begin_panel(const char* title, int x, int y, int width, int height) override {
-            return nk_begin(m_ctx, title, nk_rect(x, y, width, height), NK_WINDOW_BORDER | NK_WINDOW_TITLE) != 0;
+            // Use the title font for the panel header
+            push_font(Spherical::FontStyle::Title);
+            const bool result = nk_begin(m_ctx, title, nk_rect(x, y, width, height), NK_WINDOW_BORDER | NK_WINDOW_TITLE) != 0;
+            // Pop back to the regular font for the panel content
+            pop_font();
+            return result;
         }
 
         void end_panel() override {
@@ -67,30 +110,44 @@ namespace {
         }
 
         void label(const char* text) override {
-            nk_layout_row_dynamic(m_ctx, 25, 1);
+            nk_layout_row_dynamic(m_ctx, label_row_height(), 1);
             nk_label(m_ctx, text, NK_TEXT_LEFT);
         }
 
+        void push_font(Spherical::FontStyle style) override {
+            const nk_user_font* font = Spherical::FontRenderer::GetFontHandle(style);
+            if (font == nullptr && m_ctx != nullptr) {
+                font = m_ctx->style.font;
+            }
+            if (font != nullptr) {
+                nk_style_push_font(m_ctx, font);
+            }
+        }
+
+        void pop_font() override {
+            nk_style_pop_font(m_ctx);
+        }
+
         void spacing() override {
-            nk_layout_row_dynamic(m_ctx, 10, 1);
+            nk_layout_row_dynamic(m_ctx, spacing_row_height(), 1);
             nk_spacing(m_ctx, 1);
         }
 
         void slider_float(const char* label, float* value, float min, float max, float step) override {
-            nk_layout_row_dynamic(m_ctx, 25, 2);
+            nk_layout_row_dynamic(m_ctx, control_row_height(), 2);
             nk_label(m_ctx, label, NK_TEXT_LEFT);
             nk_slider_float(m_ctx, min, value, max, step);
         }
 
         bool button(const char* label) override {
-            nk_layout_row_dynamic(m_ctx, 30, 1);
+            nk_layout_row_dynamic(m_ctx, button_row_height(), 1);
             return nk_button_label(m_ctx, label) != 0;
         }
 
         void text_input(const char* label, char* buffer, size_t bufferSize) override {
-            nk_layout_row_dynamic(m_ctx, 25, 1);
+            nk_layout_row_dynamic(m_ctx, control_row_height(), 1);
             nk_label(m_ctx, label, NK_TEXT_LEFT);
-            nk_layout_row_dynamic(m_ctx, 25, 1);
+            nk_layout_row_dynamic(m_ctx, control_row_height(), 1);
             nk_edit_string_zero_terminated(m_ctx, NK_EDIT_FIELD, buffer,
                                            static_cast<int>(bufferSize), nk_filter_default);
         }
@@ -763,28 +820,15 @@ namespace Spherical {
         }
 
         std::string resolvedFontPath;
-        if (const char* basePathRaw = SDL_GetBasePath()) {
-            const std::string basePath(basePathRaw);
-            const std::vector<std::string> fontCandidates = {
-                basePath + "fonts/Roboto-VariableFont_wdth,wght.ttf",
-                basePath + "../fonts/Roboto-VariableFont_wdth,wght.ttf",
-                basePath + "../../../SPHERICAL-TEST/fonts/Roboto-VariableFont_wdth,wght.ttf",
-                "SPHERICAL-TEST/fonts/Roboto-VariableFont_wdth,wght.ttf"
-            };
-
-            for (const std::string& candidate : fontCandidates) {
-                std::ifstream file(candidate.c_str(), std::ios::binary);
-                if (file.good()) {
-                    resolvedFontPath = candidate;
-                    break;
-                }
-            }
-        }
+        if (info.fontPath != nullptr && info.fontPath[0] != '\0') {
+            resolvedFontPath = info.fontPath;
+        } 
 
         const char* fontPath = resolvedFontPath.empty() ? nullptr : resolvedFontPath.c_str();
+        const float uiScale = GetWindowDisplayScale(g_backend.window);
         if (!FontRenderer::Init(g_backend.device, g_backend.physicalDevice,
                                 g_backend.graphicsQueue, g_backend.commandPool,
-                                fontPath, 64)) {
+                                fontPath, uiScale)) {
             VulkanRenderer::Shutdown();
             ShutdownBackend();
             return false;
@@ -804,11 +848,11 @@ namespace Spherical {
             nk_cmd_buffer_storage.resize(MAX_NUKLEAR_DRAW_COMMAND_MEMORY);
         }
 
-        s_fallbackFont.height = 13.0f;
+        s_fallbackFont.height = std::ceil(12.0f * uiScale);
         s_fallbackFont.width = FallbackFontWidth;
         s_fallbackFont.userdata = nk_handle_ptr(nullptr);
 
-        nk_user_font* fontToUse = reinterpret_cast<nk_user_font*>(FontRenderer::GetFontHandle());
+        nk_user_font* fontToUse = FontRenderer::GetFontHandle(FontStyle::Regular);
         if (fontToUse == nullptr) {
             fontToUse = &s_fallbackFont;
         }

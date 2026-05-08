@@ -3,7 +3,11 @@
 #include <chrono>
 #include <cstdio>
 #include <array>
+#include <fstream>
+#include <string>
+#include <vector>
 #include <SDL3/SDL.h>
+
 #include "SPHERICAL.h"
 
 namespace {
@@ -23,7 +27,10 @@ namespace {
         size_t frameIndex = 0;
         std::chrono::high_resolution_clock::time_point lastFrameTime;
         double frameTime = 0.0;
-
+        
+        //New Button - toggleable
+        bool newButtonToggled = false;
+        
         double GetFPS() const {
             double totalMs = 0;
             for (double t : frameTimes) {
@@ -48,6 +55,31 @@ namespace {
     };
 
     AppUIState g_appUI;
+
+    std::string ResolveAppFontPath() {
+        std::vector<std::string> fontCandidates = {
+            "SPHERICAL-TEST/fonts/Arimo-Regular.ttf",
+            "fonts/Arimo-Regular.ttf"
+        };
+
+        if (const char* basePathRaw = SDL_GetBasePath()) {
+            const std::string basePath(basePathRaw);
+            fontCandidates.insert(fontCandidates.begin(), {
+                basePath + "fonts/Arimo-Regular.ttf",
+                basePath + "../fonts/Arimo-Regular.ttf",
+                basePath + "../../../SPHERICAL-TEST/fonts/Arimo-Regular.ttf"
+            });
+        }
+
+        for (const std::string& candidate : fontCandidates) {
+            std::ifstream file(candidate.c_str(), std::ios::binary);
+            if (file.good()) {
+                return candidate;
+            }
+        }
+
+        return {};
+    }
 
     bool SDLCALL EventWatch(void* userdata, SDL_Event* event) {
         (void)userdata;
@@ -88,7 +120,31 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
     // Register the UI build callback BEFORE initialization
     Spherical::RegisterUI([](Spherical::UIPainter& ui) {
-        if (ui.begin_panel("Control Panel", 20, 20, 350, 550)) {
+        
+        if (ui.begin_panel("Title", 500, 20, 300, 400)) {
+                ui.label("Content");
+            }
+            ui.end_panel();  // Always call this
+        
+        if (ui.begin_panel("Control Panel", 20, 20, 450, 600)) {
+            
+            ui.push_font(Spherical::FontStyle::Title);
+            ui.label("SPHERICAL Interactive Control Panel");
+            ui.pop_font();
+            
+            ui.label("This uses the regular font style.");
+            ui.spacing();
+            if (ui.button(g_appUI.newButtonToggled ? "New Button (ON)" : "New Button (OFF)")) {
+                g_appUI.newButtonToggled = !g_appUI.newButtonToggled;
+            }
+            
+            {
+                char status_label[64];
+                snprintf(status_label, sizeof(status_label), "New Button State: %s",
+                    g_appUI.newButtonToggled ? "ON" : "OFF");
+                ui.label(status_label);
+            }
+            ui.spacing();
             // FPS display
             {
                 char fps_label[64];
@@ -179,8 +235,16 @@ int main(int /*argc*/, char* /*argv*/[]) {
         ui.end_panel();  // Always call end_panel() — required even if begin_panel() returned false
     });
 
+    const std::string fontPath = ResolveAppFontPath();
+    if (fontPath.empty()) {
+        std::cerr << "Warning: Arimo-Regular.ttf not found; SDK fallback font discovery will be used." << std::endl;
+    } else {
+        std::cout << "Using UI font: " << fontPath << std::endl;
+    }
+
     Spherical::SphericalInitInfo initInfo{};
     initInfo.window = window;
+    initInfo.fontPath = fontPath.empty() ? nullptr : fontPath.c_str();
     initInfo.preferImmediatePresent = true;
     initInfo.framesInFlight = 1;
     initInfo.enableValidation = false;

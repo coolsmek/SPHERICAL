@@ -54,6 +54,10 @@ target_compile_options(Spherical PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/FS>
 )
 
+# Enable C++17 standard
+set_property(TARGET Spherical PROPERTY CXX_STANDARD 17)
+set_property(TARGET Spherical PROPERTY CXX_STANDARD_REQUIRED ON)
+
 # Link external dependencies
 target_link_libraries(Spherical PUBLIC
         SDL3::SDL3

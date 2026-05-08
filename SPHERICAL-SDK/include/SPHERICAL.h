@@ -20,6 +20,7 @@ namespace Spherical {
      */
     struct SphericalInitInfo {
         SDL_Window* window = nullptr;            ///< SDL3 window handle for input and surface creation
+        const char* fontPath = nullptr;          ///< Optional path to a TrueType/OpenType font file used for UI text
         bool preferImmediatePresent = true;      ///< Try VK_PRESENT_MODE_IMMEDIATE_KHR first, fallback to FIFO
         uint32_t framesInFlight = 1;             ///< Reserved for future multi-frame sync (currently clamped to 1)
         bool enableValidation = false;           ///< Reserved for future validation-layers toggle
