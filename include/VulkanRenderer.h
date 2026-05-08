@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "SPHERICAL.h"
+#include <vulkan/vulkan.h>
 
 // Include Nuklear headers for nk_handle type
 #include "nuklear_config.h"
@@ -8,7 +8,17 @@
 
 namespace Spherical {
     namespace VulkanRenderer {
-        bool Init(const SphericalInitInfo& info);
+        struct RendererInitInfo {
+            VkDevice device = VK_NULL_HANDLE;
+            VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+            VkQueue graphicsQueue = VK_NULL_HANDLE;
+            VkCommandPool commandPool = VK_NULL_HANDLE;
+            VkFormat colorAttachmentFormat = VK_FORMAT_UNDEFINED;
+            VkImageView colorAttachmentView = VK_NULL_HANDLE;
+            VkExtent2D framebufferExtent{0, 0};
+        };
+
+        bool Init(const RendererInitInfo& info);
         void Shutdown();
         bool IsInitialized();
         VkExtent2D GetFramebufferExtent();

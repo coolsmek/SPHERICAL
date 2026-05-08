@@ -369,12 +369,12 @@ namespace {
 
 namespace Spherical {
 namespace VulkanRenderer {
-    bool Init(const SphericalInitInfo& info) {
+    bool Init(const RendererInitInfo& info) {
         if (g_rendererState.initialized) {
             Shutdown();
         }
 
-        if (!info.instance || !info.device || !info.physicalDevice || !info.graphicsQueue ||
+        if (!info.device || !info.physicalDevice || !info.graphicsQueue ||
             !info.commandPool || !info.colorAttachmentView ||
             info.colorAttachmentFormat == VK_FORMAT_UNDEFINED ||
             info.framebufferExtent.width == 0 || info.framebufferExtent.height == 0) {
