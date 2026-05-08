@@ -9,9 +9,17 @@
  */
 
 #include <functional>
-#include <cstdint>
 
 namespace Spherical {
+
+    /**
+     * @enum FontStyle
+     * @brief Defines standard UI font styles for text rendering.
+     */
+    enum class FontStyle {
+        Regular, ///< Default body text
+        Title    ///< Larger text for titles and headers
+    };
 
     /**
      * @class UIPainter
@@ -56,6 +64,18 @@ namespace Spherical {
          * @param text Label text
          */
         virtual void label(const char* text) = 0;
+
+        /**
+         * @brief Pushes a specific font style onto the style stack for subsequent widgets.
+         * @param style The font style to use.
+         * @note Must be balanced with a call to pop_font().
+         */
+        virtual void push_font(FontStyle style) = 0;
+
+        /**
+         * @brief Pops the last pushed font style from the style stack.
+         */
+        virtual void pop_font() = 0;
 
         /**
          * @brief Add a horizontal spacer
@@ -131,6 +151,8 @@ namespace Spherical {
     void RegisterUI(const UIBuildFn& callback);
 
 } // namespace Spherical
+
+
 
 
 
