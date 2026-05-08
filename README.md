@@ -1,6 +1,7 @@
 ﻿# SPHERICAL
 
 **SPHERICAL** is a C++ GUI SDK prototype focused on building fast, responsive, desktop-style tooling UIs on top of **Vulkan 1.4 dynamic rendering**.
+> **Current Release** (Test Control Panel APP Only, **No SDK release yet**): SPHERICAL_test_app_ALPHA_RELEASE_0.1.11.zip
 
 > **Current milestone:** Phase 6 is complete. App-side GUI integration now uses `Spherical::*` calls without direct Vulkan orchestration in the consumer app.
 
@@ -18,7 +19,7 @@ This project uses the [Nuklear](https://github.com/immediate-mode-ui/nuklear) im
 To clone this repository along with the Nuklear submodule, use the `--recursive` flag:
 
 ```
-git clone --recursive https://github.com/coolsmek/SPHERICAL.git
+git clone --recursive ~~~~https://github.com/coolsmek/SPHERICAL.git
 ```
 #### ALSO:
 - SPHERICAL uses vcpkg to manage its dependencies. See vcpkg.json for more info.
