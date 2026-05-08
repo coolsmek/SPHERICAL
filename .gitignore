@@ -43,6 +43,3 @@ install_manifest.txt
 
 # Development
 dev-docs/
-
-#Nuklear
-SPHERICAL-SDK/include/nuklear.h

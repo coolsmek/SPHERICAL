@@ -1,0 +1,3 @@
+[submodule "SPHERICAL-SDK/third_party/Nuklear"]
+	path = SPHERICAL-SDK/third_party/Nuklear
+	url = https://github.com/Immediate-Mode-UI/Nuklear.git
