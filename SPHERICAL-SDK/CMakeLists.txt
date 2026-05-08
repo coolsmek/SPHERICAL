@@ -39,7 +39,10 @@ add_library(Spherical STATIC
 add_dependencies(Spherical SphericalShaders)
 
 # Set include directories for internal headers
-target_include_directories(Spherical PUBLIC include)
+target_include_directories(Spherical PUBLIC
+        include
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/Nuklear
+)
 target_include_directories(Spherical PRIVATE src)  # For nuklear_config.h
 
 target_compile_definitions(Spherical PRIVATE
