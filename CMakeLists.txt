@@ -10,7 +10,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 	endif()
 endif()
 
-project(SPHERICAL VERSION 0.1.12 LANGUAGES CXX)
+project(SPHERICAL VERSION 0.1.13 LANGUAGES CXX)
 set (SPHERICAL_VERSION_SUFFIX "alpha")
 
 # Force CMake to find the 1.4 components
