@@ -10,8 +10,6 @@
 **SPHERICAL** is a C++ GUI SDK prototype focused on building fast, responsive, desktop-style tooling UIs on top of **Vulkan 1.4 dynamic rendering**.
 > **Current Release** (Test Control Panel APP Only, **No SDK Library release yet**): [SPHERICAL_Test_PreRelease_v0.1.12-alpha.zip](https://github.com/coolsmek/SPHERICAL/releases/tag/SPHERICAL_Test)
 
-> **Current milestone:** Phase 6 is complete. App-side GUI integration now uses `Spherical::*` calls without direct Vulkan orchestration in the consumer app.
-
 ---
 
 --- 
@@ -42,7 +40,7 @@ git clone --recursive https://github.com/coolsmek/SPHERICAL.git
 #### ALSO:
 - SPHERICAL uses vcpkg to manage its dependencies. See vcpkg.json for more info.
 - SPHERICAL uses CMake to manage its build.
-- this repo includes font Roboto-VariableFont_wdth,wght.ttf for use with the demo app. see SPHEREICAL-TEST/fonts/OFL.txt for license details.
+- this repo includes font Arimo-Regular.ttf for use with the SPHERICAL_Test app. see SPHEREICAL-TEST/fonts/LICENSE.txt for license details.
 
 ---
 
@@ -59,7 +57,8 @@ The current milestone is an interactive demo app that proves the end-to-end pipe
 
 ## Vision
 
-SPHERICAL is aiming at more than “just another widget library.”
+SPHERICAL is aiming to be a functional GUI SDK for desktop applications, focusing on Game Development and Tooling 
+environments integrating 3D viewport and user interaction. <- the latter is a stretch goal, but the former is the primary target.
 
 The long-term goal is a **tooling-oriented GUI SDK** for applications that care about:
 
@@ -104,40 +103,6 @@ In short: SPHERICAL is trying to be a foundation for **native-feeling, GPU-drive
 - Expand the SDK from a working prototype into a more reusable editor/toolkit foundation
 
 ---
-
-## Current Status
-
-SPHERICAL is currently in a **fully functional prototype** stage with core rendering, input, text, background-task paths, app-facing Vulkan abstraction, and **declarative UI API** implemented.
-
-### ✅ Phases 1–6: Implemented
-
-- **Phase 1B**: Vulkan dynamic rendering pipeline (`vkCmdBeginRendering`) fully implemented
-- **Phase 2 (Base Atlas)**: FreeType font atlas baking and rendering working end-to-end
-- **Phase 2B**: FreeType SDF text rendering implemented; minor thin-stroke polish remains
-- **Phase 3**: SDL3 input mapping to Nuklear complete (mouse, keyboard, text input all interactive)
-- **Phase 4**: Task runner integrated (`std::thread` + main-thread completion polling)
-- **Phase 6**: **Declarative UI API** — Apps define UI via `Spherical::RegisterUI(callback)` without Vulkan/Nuklear knowledge; SDK translates to rendering
-
-### Demo App Live & Functional
-
-The demo renders an interactive control panel with:
-  - ✅ FPS label (60-frame rolling average)
-  - ✅ Mouse position tracking
-  - ✅ RGB sliders (zero-latency responsiveness)
-  - ✅ Clickable button with counter
-  - ✅ Text input field with echo display
-  - ✅ All text rendered with the FreeType SDF atlas
-  - ✅ **UI defined entirely via `Spherical::UIPainter` in app code** (no hardcoding in SDK)
-
-### Next Steps
-
-Phase 6 (SDK-owned Vulkan abstraction with declarative UI API) is complete and integrated in the demo flow.  
-**Phase 5 (Command Palette + Hover Animation) is now the next major feature block.**
-
-For detailed implementation status:
-
-- `dev-docs/SPHERICAL_SCOPE.md` — Full architecture, phase tracking, and next priorities
-- `dev-docs/demoApp_ControlPanel.md` — Demo app specification and runtime checklist
 
 ---
 
@@ -240,7 +205,7 @@ This separation means:
 
 ### `SPHERICAL.h` Public API
 
-The new public lifecycle and UI entry points:
+The public lifecycle and UI entry points:
 
 - `Spherical::Init(SphericalInitInfo)` — Initialize the SDK with a window
 - `Spherical::NewFrame()` — Update input state from OS events
@@ -276,63 +241,6 @@ Spherical::RegisterUI([](Spherical::UIPainter& ui) {
 
 Spherical::Init(initInfo);
 ```
-
-### `SPHERICAL-SDK`
-
-Current public lifecycle entry points:
-
-- `Spherical::Init(...)`
-- `Spherical::NewFrame()`
-- `Spherical::Render()`
-- `Spherical::Shutdown()`
-
-Legacy Vulkan-parameter integration calls are retained only as temporary compatibility shims during migration and are not part of the recommended app-facing path.
-
-This is the public-facing integration surface the demo app now uses.
-
-### `VulkanRenderer`
-
-Responsible for:
-
-- dynamic rendering setup
-- graphics pipeline creation
-- descriptor set / sampler setup for UI textures
-- UI vertex/index buffer upload targets
-- command recording helpers for draw submission
-
-Relevant files:
-
-- `SPHERICAL-SDK/include/VulkanRenderer.h`
-- `SPHERICAL-SDK/src/VulkanRenderer.cpp`
-
-### `FontRenderer`
-
-Responsible for:
-
-- font loading through FreeType
-- glyph rasterization
-- atlas baking
-- atlas upload to Vulkan
-- `nk_user_font` callbacks for width and glyph query
-
-Relevant files:
-
-- `SPHERICAL-SDK/include/FontRenderer.h`
-- `SPHERICAL-SDK/src/FontRenderer.cpp`
-
-### `SPHERICAL-TEST`
-
-The standalone demo application that validates the SDK end to end.
-
-Current state:
-
-- SDL window creation
-- app loop ownership
-- SPHERICAL-only GUI integration (`Init/NewFrame/Render/Shutdown`)
-
-Relevant file:
-
-- `SPHERICAL-TEST/main.cpp`
 
 ---
 
@@ -387,6 +295,7 @@ This demo is the current reference implementation for how the SDK is expected to
 
 ```text
 SPHERICAL/
+├─ images/
 ├─ SPHERICAL-SDK/
 │  ├─ include/
 │  ├─ shaders/
@@ -395,7 +304,6 @@ SPHERICAL/
 ├─ SPHERICAL-TEST/
 │  ├─ fonts/
 │  └─ main.cpp
-├─ dev-docs/
 ├─ cmake/
 ├─ CMakeLists.txt
 └─ build_all.bat
@@ -446,105 +354,3 @@ cmake --build .\cmake-build-spherical_debug --config Debug --target SPHERICAL_Te
 - The demo bundles its font assets into the runtime output folder.
 - The current text path uses a FreeType SDF atlas.
 - Explorer / double-click launch is supported by resolving font assets relative to the executable output.
-
----
-
-## Roadmap
-
-### Phase 1 — Vulkan Dynamic Rendering Pipeline
-- [x] dynamic rendering scaffold
-- [x] Nuklear draw command submission through Vulkan
-
-### Phase 2 — Font Texture + Real `nk_user_font`
-- [x] ASCII glyph baking
-- [x] Vulkan atlas upload
-- [x] `nk_user_font` callbacks for width/glyph query
-- [x] SDF text rendering path
-- [ ] MSDF text rendering / further polish
-
-### Phase 3 — SDL3 → Nuklear Input Mapping
-- [x] mouse / key / wheel / text event forwarding
-- [x] host-vs-SDK event ownership semantics validated
-
-### Phase 4 — Task Runner (Implemented in SDK)
-- [x] background work queue (`std::thread` + mutex/condition_variable)
-- [x] main-thread completion polling
-- [x] non-blocking "loading" workflows
-
-### Phase 6 — SDK-Owned Vulkan Abstraction (COMPLETE)
-- [x] remove Vulkan requirements from app-facing GUI integration API
-- [x] deprecate `Spherical::SetRenderTarget(...)` in app integration path
-- [x] replace `Spherical::Render(VkCommandBuffer)` with app-facing no-Vulkan render call
-- [x] update demo app to no Vulkan calls for GUI integration
-
-### Phase 5 — Command Palette + Hover Animation (NEXT PRIORITY)
-- [ ] command palette popup (`Ctrl+P` triggered)
-- [ ] fuzzy search command registry
-- [ ] interaction polish / hover fades
-
-### Phase 2 Full — SDF Text Rendering (Polish Enhancement)
-- [x] Upgrade bitmap atlas to SDF (Signed Distance Fields)
-- [ ] Scale-independent/MSDF polish for smaller glyphs
-- [ ] High-DPI support refinement
-
----
-
-## Lofty Goals
-
-SPHERICAL is explicitly aspiring to become the kind of GUI SDK that feels appropriate for:
-
-- editor tooling
-- technical applications
-- custom content tools
-- control surfaces for real-time systems
-
-That means not just “draw widgets,” but eventually:
-
-- **crisp scalable text**
-- **stable high refresh UI loops**
-- **non-blocking background tasks**
-- **command-driven workflows**
-- **more refined interaction feel**
-
-The ambition is to push toward the perceived quality of professional desktop tools while staying native, explicit, and understandable.
-
----
-
-## Documentation
-
-Additional project notes live in:
-
-- `SPHERICAL-SDK/include/docs/nuklear_map.md`
-
-The Nuklear map was generated specifically to make the large single-header library easier to reason about during development.
-
----
-
-## Contributing / Development Notes
-
-This project is still evolving rapidly, so the internal structure may change while the SDK surface settles.
-
-If you are working in the repo, it helps to think in layers:
-
-1. **host app layer** — windowing/app loop + SDK calls
-2. **SDK layer** — lifecycle + UI orchestration + internal Vulkan orchestration
-3. **renderer layer** — Vulkan pipeline + draw submission (internal)
-4. **font layer** — FreeType baking + texture upload + glyph metadata
-
-When debugging UI rendering issues, that separation is often the fastest way to localize the problem.
-
----
-
-## Status Summary
-
-SPHERICAL is now a **fully functional prototype** demonstrating all core rendering capabilities:
-
-- ✅ **Vulkan-backed immediate-mode GUI** rendering at low latency
-- ✅ **Real interactive controls** (sliders, buttons, text fields)
-- ✅ **Custom renderer ownership** with explicit GPU pacing
-- ✅ **Text rendering** with FreeType SDF-baked glyph atlas
-- ✅ **Input integration** with SDL3 and Nuklear
-
-**What's working now:** The demo app builds, runs, and renders an interactive control panel with visible text, responsive sliders, clickable buttons, text input, and non-blocking background task behavior, using SPHERICAL-only app integration calls.
-
-**What's next:** Command palette for workflow, hover animations for polish, and optional MSDF refinement for even better scale-independence.
