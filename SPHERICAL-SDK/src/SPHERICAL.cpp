@@ -15,6 +15,15 @@
 #include <cstddef>
 #include <fstream>
 #include <string>
+#include <iostream>
+#include <sstream>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace {
     struct BackendState {
@@ -45,7 +54,24 @@ namespace {
         bool preferImmediatePresent = true;
         bool initialized = false;
     };
+    
+    struct ScrollbarDragState {
+        bool active = false;
+        std::string windowTitle;
+        float dragStartMouseY = 0.0f;
+        float dragStartScrollY = 0.0f;
+        float trackY = 0.0f;
+        float trackH = 0.0f;
+        float thumbH = 0.0f;
+        float maxScrollY = 0.0f;
+        float grabOffsetY = 0.0f;  // distance from mouse to top of thumb at click time
+    };
 
+    struct SliderTrackDragState {
+        bool active = false;
+        float* valueRef = nullptr;
+    };
+    
     BackendState g_backend;
 
     // UI registration and implementation
@@ -60,10 +86,51 @@ namespace {
         return scale > 0.0f ? scale : 1.0f;
     }
 
+    ScrollbarDragState g_scrollbarDrag;
+    SliderTrackDragState g_sliderTrackDrag;
+
+    static bool IsLeftMouseDown(const nk_context* ctx) {
+        return ctx != nullptr && ctx->input.mouse.buttons[NK_BUTTON_LEFT].down != 0;
+    }
+
+    static bool WasLeftMousePressed(const nk_context* ctx) {
+        if (ctx == nullptr) {
+            return false;
+        }
+
+        const nk_mouse_button& button = ctx->input.mouse.buttons[NK_BUTTON_LEFT];
+        return button.down != 0 && button.clicked != 0;
+    }
+
+    static bool IsMouseInsideRect(const nk_context* ctx, const struct nk_rect& rect) {
+        if (ctx == nullptr) {
+            return false;
+        }
+
+        const float mx = ctx->input.mouse.pos.x;
+        const float my = ctx->input.mouse.pos.y;
+        return mx >= rect.x && mx <= (rect.x + rect.w) &&
+               my >= rect.y && my <= (rect.y + rect.h);
+    }
+    
+    static void DebugDragTrace(float mouseY, float thumbTopY) {
+        std::ostringstream line;
+        line << "[SCROLL-DRAG] mouseY=" << mouseY << " thumbTopY=" << thumbTopY << '\n';
+
+        // Works when app is launched from a terminal.
+        std::cout << line.str();
+
+#ifdef _WIN32
+        // Works when no console is attached (view in debugger output / DebugView).
+        OutputDebugStringA(line.str().c_str());
+#endif
+    }
+
     class UIPainterImpl : public Spherical::UIPainter {
     private:
         nk_context* m_ctx = nullptr;
         VkExtent2D m_framebufferExtent{};
+        const char* m_activePanelTitle = nullptr;
 
         float current_font_height() const {
             if (m_ctx != nullptr && m_ctx->style.font != nullptr) {
@@ -92,6 +159,136 @@ namespace {
         float spacing_row_height() const {
             return std::max(4.0f, std::ceil(current_font_height() * 0.8f));
         }
+        
+        //scrollbar drag helpers
+        void release_scrollbar_drag_if_needed(const char* title) {
+            if (title == nullptr) {
+                return;
+            }
+
+            if (g_scrollbarDrag.active && g_scrollbarDrag.windowTitle == title) {
+                g_scrollbarDrag = {};
+            }
+        }
+
+        void handle_vertical_scrollbar_drag(const char* title) {
+            if (m_ctx == nullptr || title == nullptr) {
+                return;
+            }
+
+            nk_panel* panel = nk_window_get_panel(m_ctx);
+            if (panel == nullptr) {
+                return;
+            }
+
+            nk_uint scrollX = 0;
+            nk_uint scrollY = 0;
+            nk_window_get_scroll(m_ctx, &scrollX, &scrollY);
+
+            const struct nk_rect windowBounds = nk_window_get_bounds(m_ctx);
+            const struct nk_rect contentRegion = nk_window_get_content_region(m_ctx);
+
+            const float visibleContentHeight = contentRegion.h;
+            // nk_end() advances panel->at_y by panel->row.height; include it here since we run before nk_end().
+            const float estimatedContentBottomY = panel->at_y + panel->row.height;
+            const float totalContentHeight = std::max(estimatedContentBottomY - contentRegion.y, visibleContentHeight);
+            const float maxScrollY = std::max(0.0f, totalContentHeight - visibleContentHeight);
+
+            if (maxScrollY <= 0.0f) {
+                release_scrollbar_drag_if_needed(title);
+                return;
+            }
+
+            const float scrollbarWidth = m_ctx->style.window.scrollbar_size.x;
+            if (scrollbarWidth <= 0.0f) {
+                release_scrollbar_drag_if_needed(title);
+                return;
+            }
+
+            struct nk_rect track{};
+            track.x = windowBounds.x + windowBounds.w - scrollbarWidth;
+            track.y = contentRegion.y;
+            track.w = scrollbarWidth;
+            track.h = visibleContentHeight;
+
+            // Expand hit area to include the left-edge border/padding around the visual scrollbar.
+            const float edgeExpand = std::max(
+                2.0f,
+                m_ctx->style.window.border + m_ctx->style.scrollv.border + m_ctx->style.scrollv.padding.x
+            );
+
+            struct nk_rect trackHit = track;
+            trackHit.x -= edgeExpand;
+            trackHit.w += edgeExpand;
+
+            if (track.h <= 0.0f) {
+                release_scrollbar_drag_if_needed(title);
+                return;
+            }
+
+            const float thumbRatio = visibleContentHeight / totalContentHeight;
+            const float thumbH = std::max(16.0f, track.h * thumbRatio);
+            const float thumbTravel = std::max(1.0f, track.h - thumbH);
+            const float normalizedScroll = (maxScrollY > 0.0f) ? (static_cast<float>(scrollY) / maxScrollY) : 0.0f;
+
+            struct nk_rect thumb{};
+            thumb.x = track.x;
+            thumb.y = track.y + normalizedScroll * thumbTravel;
+            thumb.w = track.w;
+            thumb.h = thumbH;
+
+            const bool leftPressed = WasLeftMousePressed(m_ctx);
+            const bool leftDown = IsLeftMouseDown(m_ctx);
+
+            if (!leftDown) {
+                release_scrollbar_drag_if_needed(title);
+                return;
+            }
+
+            if (!g_scrollbarDrag.active && leftPressed) {
+                const bool clickedThumb = IsMouseInsideRect(m_ctx, thumb);
+                const bool clickedTrack = IsMouseInsideRect(m_ctx, trackHit);
+
+                if (clickedThumb || clickedTrack) {
+                    g_scrollbarDrag.active = true;
+                    g_scrollbarDrag.windowTitle = title;
+                    g_scrollbarDrag.dragStartMouseY = m_ctx->input.mouse.pos.y;
+                    g_scrollbarDrag.dragStartScrollY = static_cast<float>(scrollY);
+                    g_scrollbarDrag.trackY = track.y;
+                    g_scrollbarDrag.trackH = track.h;
+                    g_scrollbarDrag.thumbH = thumb.h;
+                    g_scrollbarDrag.maxScrollY = maxScrollY;
+
+                    if (clickedThumb) {
+                        // Preserve exact grab position inside thumb for 1:1 dragging.
+                        g_scrollbarDrag.grabOffsetY = m_ctx->input.mouse.pos.y - thumb.y;
+                    } else {
+                        // Track click: snap thumb center to cursor, then continue drag with same math.
+                        g_scrollbarDrag.grabOffsetY = g_scrollbarDrag.thumbH * 0.5f;
+                    }
+
+                    // Prevent Nuklear's built-in track-click paging from overriding custom behavior.
+                    m_ctx->input.mouse.buttons[NK_BUTTON_LEFT].clicked = 0;
+                }
+            }
+
+            if (!g_scrollbarDrag.active || g_scrollbarDrag.windowTitle != title) {
+                return;
+            }
+
+            const float dragTravel = std::max(1.0f, g_scrollbarDrag.trackH - g_scrollbarDrag.thumbH);
+
+            float desiredThumbY = m_ctx->input.mouse.pos.y - g_scrollbarDrag.grabOffsetY;
+            desiredThumbY = std::clamp(desiredThumbY, g_scrollbarDrag.trackY, g_scrollbarDrag.trackY + dragTravel);
+
+            DebugDragTrace(m_ctx->input.mouse.pos.y, desiredThumbY);
+
+            const float normalizedThumb = (desiredThumbY - g_scrollbarDrag.trackY) / dragTravel;
+            const float desiredScrollY = std::clamp(normalizedThumb * g_scrollbarDrag.maxScrollY, 0.0f, g_scrollbarDrag.maxScrollY);
+
+            nk_window_set_scroll(m_ctx, scrollX, static_cast<nk_uint>(desiredScrollY + 0.5f));
+            m_ctx->input.mouse.scroll_delta.y = 0.0f;
+        }
 
     public:
         UIPainterImpl(nk_context* ctx, VkExtent2D extent) : m_ctx(ctx), m_framebufferExtent(extent) {}
@@ -102,11 +299,23 @@ namespace {
             const bool result = nk_begin(m_ctx, title, nk_rect(x, y, width, height), NK_WINDOW_BORDER | NK_WINDOW_TITLE) != 0;
             // Pop back to the regular font for the panel content
             pop_font();
+
+            // Defer drag handling until end_panel so layout metrics (panel->at_y) include all widgets.
+            m_activePanelTitle = result ? title : nullptr;
+            if (!result) {
+                release_scrollbar_drag_if_needed(title);
+            }
+
             return result;
         }
 
         void end_panel() override {
+            if (m_activePanelTitle != nullptr) {
+                // Apply custom drag while the panel is still active/current.
+                handle_vertical_scrollbar_drag(m_activePanelTitle);
+            }
             nk_end(m_ctx);
+            m_activePanelTitle = nullptr;
         }
 
         void label(const char* text) override {
@@ -132,11 +341,105 @@ namespace {
             nk_layout_row_dynamic(m_ctx, spacing_row_height(), 1);
             nk_spacing(m_ctx, 1);
         }
-
+        
         void slider_float(const char* label, float* value, float min, float max, float step) override {
             nk_layout_row_dynamic(m_ctx, control_row_height(), 2);
             nk_label(m_ctx, label, NK_TEXT_LEFT);
-            nk_slider_float(m_ctx, min, value, max, step);
+
+            if (m_ctx == nullptr || value == nullptr || m_ctx->current == nullptr || m_ctx->current->layout == nullptr) {
+                return;
+            }
+
+            nk_window* win = m_ctx->current;
+            nk_panel* layout = win->layout;
+            const nk_style* style = &m_ctx->style;
+            const nk_style_slider* sliderStyle = &style->slider;
+
+            struct nk_rect bounds{};
+            const nk_widget_layout_states widgetState = nk_widget(&bounds, m_ctx);
+            if (!widgetState) {
+                return;
+            }
+
+            const bool isReadOnly = (widgetState == NK_WIDGET_DISABLED) || ((layout->flags & NK_WINDOW_ROM) != 0);
+            nk_input* in = isReadOnly ? nullptr : &m_ctx->input;
+
+            // Match Nuklear slider geometry (padding + optional inc/dec buttons).
+            struct nk_rect track = bounds;
+            track.x += sliderStyle->padding.x;
+            track.y += sliderStyle->padding.y;
+            track.h = NK_MAX(track.h, 2.0f * sliderStyle->padding.y) - 2.0f * sliderStyle->padding.y;
+            track.w = NK_MAX(track.w, 2.0f * sliderStyle->padding.x + sliderStyle->cursor_size.x) - 2.0f * sliderStyle->padding.x;
+
+            if (sliderStyle->show_buttons) {
+                const float buttonW = track.h;
+                track.x += buttonW + sliderStyle->spacing.x;
+                track.w -= (2.0f * buttonW + 2.0f * sliderStyle->spacing.x);
+            }
+
+            const bool leftDown = IsLeftMouseDown(m_ctx);
+            const bool leftPressed = WasLeftMousePressed(m_ctx);
+
+            if (!leftDown && g_sliderTrackDrag.active && g_sliderTrackDrag.valueRef == value) {
+                g_sliderTrackDrag = {};
+            }
+
+            if (in != nullptr && leftPressed && IsMouseInsideRect(m_ctx, track)) {
+                g_sliderTrackDrag.active = true;
+                g_sliderTrackDrag.valueRef = value;
+            }
+
+            const float sliderMin = std::min(min, max);
+            const float sliderMax = std::max(min, max);
+            const float safeStep = (step > 0.0f) ? step : 1.0f;
+
+            const bool draggingThisSlider =
+                (in != nullptr) && g_sliderTrackDrag.active && (g_sliderTrackDrag.valueRef == value) && leftDown;
+
+            if (draggingThisSlider) {
+                const float t = (track.w > 0.0f) ? ((m_ctx->input.mouse.pos.x - track.x) / track.w) : 0.0f;
+                float newValue = sliderMin + std::clamp(t, 0.0f, 1.0f) * (sliderMax - sliderMin);
+                newValue = sliderMin + std::round((newValue - sliderMin) / safeStep) * safeStep;
+                *value = std::clamp(newValue, sliderMin, sliderMax);
+            }
+
+            *value = std::clamp(*value, sliderMin, sliderMax);
+
+            const bool hovered = (in != nullptr) && IsMouseInsideRect(m_ctx, track);
+            const bool active = draggingThisSlider;
+            const nk_color barColor = active ? sliderStyle->bar_active : (hovered ? sliderStyle->bar_hover : sliderStyle->bar_normal);
+            const nk_style_item* cursorItem = active
+                ? &sliderStyle->cursor_active
+                : (hovered ? &sliderStyle->cursor_hover : &sliderStyle->cursor_normal);
+
+            struct nk_rect bar{};
+            bar.x = track.x;
+            bar.y = (track.y + track.h * 0.5f) - (sliderStyle->bar_height * 0.5f);
+            bar.w = track.w;
+            bar.h = sliderStyle->bar_height;
+
+            const float ratio = (sliderMax > sliderMin) ? ((*value - sliderMin) / (sliderMax - sliderMin)) : 0.0f;
+            const float clampedRatio = std::clamp(ratio, 0.0f, 1.0f);
+
+            struct nk_rect fill = bar;
+            fill.w *= clampedRatio;
+
+            struct nk_rect cursor{};
+            cursor.w = sliderStyle->cursor_size.x;
+            cursor.h = sliderStyle->cursor_size.y;
+            cursor.x = track.x + track.w * clampedRatio - cursor.w * 0.5f;
+            cursor.y = (track.y + track.h * 0.5f) - cursor.h * 0.5f;
+
+            nk_fill_rect(&win->buffer, bounds, sliderStyle->rounding, style->window.background);
+            nk_stroke_rect(&win->buffer, bounds, sliderStyle->rounding, sliderStyle->border, sliderStyle->border_color);
+            nk_fill_rect(&win->buffer, bar, sliderStyle->rounding, barColor);
+            nk_fill_rect(&win->buffer, fill, sliderStyle->rounding, sliderStyle->bar_filled);
+
+            if (cursorItem->type == NK_STYLE_ITEM_IMAGE) {
+                nk_draw_image(&win->buffer, cursor, &cursorItem->data.image, nk_rgb(255, 255, 255));
+            } else {
+                nk_fill_circle(&win->buffer, cursor, cursorItem->data.color);
+            }
         }
 
         bool button(const char* label) override {
@@ -152,6 +455,27 @@ namespace {
                                            static_cast<int>(bufferSize), nk_filter_default);
         }
 
+        bool radio_button(const char* label, int* activeIndex, int value) override {
+            if (activeIndex == nullptr) {
+                // nothing to modify
+                return false;
+            }
+
+            // Use same row height as other controls
+            nk_layout_row_dynamic(m_ctx, control_row_height(), 1);
+
+            // Remember previous selection so we can detect a change
+            const int prev = *activeIndex;
+
+            // Nuklear draws the radio and its label together
+            // We call nk_radio_label which will set *activeIndex to 'value' when user selects it.
+            if (nk_option_label(m_ctx, label, static_cast<nk_bool>(*activeIndex == value))) {
+                *activeIndex = value;
+            }
+
+            return (*activeIndex != prev);
+        }
+        
         uint32_t get_framebuffer_width() const override {
             return m_framebufferExtent.width;
         }
@@ -888,14 +1212,25 @@ namespace Spherical {
                 case SDL_EVENT_MOUSE_BUTTON_UP: {
                     const int x = static_cast<int>(event.button.x);
                     const int y = static_cast<int>(event.button.y);
+                        
                     int button = NK_BUTTON_LEFT;
                     if (event.button.button == SDL_BUTTON_MIDDLE) {
                         button = NK_BUTTON_MIDDLE;
                     } else if (event.button.button == SDL_BUTTON_RIGHT) {
                         button = NK_BUTTON_RIGHT;
                     }
-                    nk_input_button(&ctx, static_cast<nk_buttons>(button), x, y,
-                                    event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+                        
+                    const bool isDown = (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);    
+                    nk_input_button(&ctx, static_cast<nk_buttons>(button), x, y, isDown);
+                    // SDK-side fix: when the left button is pressed, make Nuklear compute motion
+                    // deltas relative to the click position by setting input.prev to clicked_pos.
+                    // This gives absolute drag movement and mitigates scrollbar cursor lag
+                    //if (isDown && button == NK_BUTTON_LEFT) {
+                        //ctx.input.mouse.buttons is accessible here; set prev to clicked_pos
+                        //ctx.input.mouse.prev.x = ctx.input.mouse.buttons[NK_BUTTON_LEFT].clicked_pos.x;
+                        //ctx.input.mouse.prev.y = ctx.input.mouse.buttons[NK_BUTTON_LEFT].clicked_pos.y;
+                    //}
+                        
                     break;
                 }
                 case SDL_EVENT_MOUSE_WHEEL: {

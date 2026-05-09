@@ -116,6 +116,21 @@ namespace Spherical {
          * @brief Get the current framebuffer height in pixels
          */
         virtual uint32_t get_framebuffer_height() const = 0;
+        
+        /**
+         * @brief Add a radio button (part of an integer-indexed group)
+         * @param label Label text shown next to the radio control
+         * @param activeIndex Pointer to the integer that holds the currently selected value for the group
+         * @param value The integer value that corresponds to this radio option
+         * @return true if the active value changed as a result of user interaction
+         *
+         * Usage:
+         *   // single int stored by the application represents the selected value
+         *   if (ui.radio_button("Option A", &selectedIndex, 0)) {
+         *       // selection changed to value 0
+         *   }
+         */
+        virtual bool radio_button(const char* label, int* activeIndex, int value) = 0;
     };
 
     /**

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <array>
 #include <fstream>
+#include <nuklear.h>
 #include <string>
 #include <vector>
 #include <SDL3/SDL.h>
@@ -12,7 +13,7 @@
 
 namespace {
     std::atomic_bool g_shouldQuit = false;
-
+    
     // App-owned UI state
     struct AppUIState {
         float colorR = 0.5f;
@@ -27,6 +28,8 @@ namespace {
         size_t frameIndex = 0;
         std::chrono::high_resolution_clock::time_point lastFrameTime;
         double frameTime = 0.0;
+        // example radio button
+        int selectedMode = 0;
         
         //New Button - toggleable
         bool newButtonToggled = false;
@@ -97,6 +100,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     std::cout << "=== SPHERICAL Interactive Control Panel Demo ===" << std::endl;
 
     SDL_SetHint("SDL_VIDEODRIVER", "windows");
+    
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         std::cerr << "Failed to initialize SDL3: " << SDL_GetError() << std::endl;
         return 1;
@@ -144,7 +148,21 @@ int main(int /*argc*/, char* /*argv*/[]) {
                     g_appUI.newButtonToggled ? "ON" : "OFF");
                 ui.label(status_label);
             }
+            
             ui.spacing();
+            
+            if (ui.radio_button("Mode A", &g_appUI.selectedMode, 0)) {
+            // changed to Mode A
+            }
+            if (ui.radio_button("Mode B", &g_appUI.selectedMode, 1)) {
+                // changed to Mode B
+            }
+            if (ui.radio_button("Mode C", &g_appUI.selectedMode, 2)) {
+                // changed to Mode C
+            }
+            
+            ui.spacing();
+            
             // FPS display
             {
                 char fps_label[64];
@@ -231,6 +249,9 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 }
                 ui.label(load_label);
             }
+            
+            ui.spacing();
+                        
         }
         ui.end_panel();  // Always call end_panel() — required even if begin_panel() returned false
     });

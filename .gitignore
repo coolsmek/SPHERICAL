@@ -36,6 +36,9 @@ _deps/
 Testing/
 __cmake_systeminformation/
 
+#releases archive
+github_releases/
+
 # Generated Files
 install_manifest.txt
 *.vcxproj
