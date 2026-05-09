@@ -270,7 +270,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     Spherical::SphericalInitInfo initInfo{};
     initInfo.window = window;
     initInfo.fontPath = fontPath.empty() ? nullptr : fontPath.c_str();
-    initInfo.preferImmediatePresent = true;
+    initInfo.preferImmediatePresent = false;
     initInfo.framesInFlight = 1;
     initInfo.enableValidation = false;
 
@@ -282,10 +282,21 @@ int main(int /*argc*/, char* /*argv*/[]) {
         return 1;
     }
 
+    constexpr double kTargetFps = 200.0;
+    constexpr double kTargetFrameMs = 1000.0 / kTargetFps;
+
     while (!g_shouldQuit.load()) {
+        const auto frameStart = std::chrono::high_resolution_clock::now();
+
         g_appUI.UpdateFrameTime();
         Spherical::NewFrame();
         Spherical::Render();
+
+        const auto frameEnd = std::chrono::high_resolution_clock::now();
+        const double frameMs = std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
+        if (frameMs < kTargetFrameMs) {
+            SDL_Delay(static_cast<Uint32>(kTargetFrameMs - frameMs));
+        }
     }
 
     Spherical::Shutdown();

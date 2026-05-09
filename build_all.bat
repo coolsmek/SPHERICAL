@@ -2,20 +2,20 @@
 setlocal
 
 rem build commands:
-rem .\build_all.bat Debug cmake-build-spherical_debug run
-rem .\build_all.bat Debug cmake-build-spherical_debug norun
+rem .\build_all.bat Debug cmake-build-spherical-debug run
+rem .\build_all.bat Debug cmake-build-spherical-debug norun
 
 rem Usage:
 rem   build_all.bat [Config] [BuildDir] [RunMode]
 rem Example:
-rem   build_all.bat Debug cmake-build-spherical_debug
-rem   build_all.bat Release cmake-build-spherical_debug --run
+rem   build_all.bat Debug cmake-build-spherical-debug
+rem   build_all.bat Release cmake-build-spherical-debug --run
 
 set "CONFIG=%~1"
 if "%CONFIG%"=="" set "CONFIG=Debug"
 
 set "BUILD_DIR=%~2"
-if "%BUILD_DIR%"=="" set "BUILD_DIR=cmake-build-spherical_debug"
+if "%BUILD_DIR%"=="" set "BUILD_DIR=cmake-build-spherical-debug"
 
 set "RUN_MODE=%~3"
 if "%RUN_MODE%"=="" set "RUN_MODE=--no-run"
