@@ -11,6 +11,10 @@
 
 #include "SPHERICAL.h"
 
+#ifndef SPHERICAL_APP_VERSION
+#define SPHERICAL_APP_VERSION "dev"
+#endif
+
 namespace {
     std::atomic_bool g_shouldQuit = false;
     
