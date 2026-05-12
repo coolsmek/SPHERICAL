@@ -10,8 +10,27 @@
 
 #include <functional>
 
-namespace Spherical {
 
+
+namespace Spherical {
+    
+    struct UIColor {
+        float r = 1.0f;
+        float g = 1.0f;
+        float b = 1.0f;
+        float a = 1.0f;
+    };
+
+    struct UIVec2 {
+        float x = 0.0f;
+        float y = 0.0f;
+    };
+
+    enum class ButtonStyle {
+        Flat,
+        Embossed
+    };
+    
     /**
      * @enum FontRenderMode
      * @brief Defines the glyph rasterization strategy used by the SDK font system.
@@ -140,6 +159,253 @@ namespace Spherical {
          *   }
          */
         virtual bool radio_button(const char* label, int* activeIndex, int value) = 0;
+        
+        
+        /**
+         * @brief Push a color override for regular panel content text.
+         * @note Must be balanced with pop_text_color().
+         */
+        virtual void push_text_color(const UIColor& color) = 0;
+
+        /**
+         * @brief Pop the last regular text color override.
+         */
+        virtual void pop_text_color() = 0;
+
+        /**
+         * @brief Push a panel body color override.
+         * @note Internally applies to both Nuklear window.background and window.fixed_background.
+         *       Must be balanced with pop_panel_body_color().
+         */
+        virtual void push_panel_body_color(const UIColor& color) = 0;
+
+        /**
+         * @brief Pop the last panel body color override.
+         */
+        virtual void pop_panel_body_color() = 0;
+
+        /**
+         * @brief Push a panel title bar color override.
+         * @note Applies to the title bar normal/hover/active header background states.
+         *       Must be balanced with pop_panel_title_bar_color().
+         */
+        virtual void push_panel_title_bar_color(const UIColor& color) = 0;
+
+        /**
+         * @brief Pop the last panel title bar color override.
+         */
+        virtual void pop_panel_title_bar_color() = 0;
+
+        /**
+         * @brief Push a panel border color override.
+         * @note Must be balanced with pop_panel_border_color().
+         */
+        virtual void push_panel_border_color(const UIColor& color) = 0;
+
+        /**
+         * @brief Pop the last panel border color override.
+         */
+        virtual void pop_panel_border_color() = 0;
+
+        /**
+         * @brief Push a panel title text color override.
+         * @note Applies to the title text normal/hover/active header label states.
+         *       Must be balanced with pop_panel_title_text_color().
+         */
+        virtual void push_panel_title_text_color(const UIColor& color) = 0;
+
+        /**
+         * @brief Pop the last panel title text color override.
+         */
+        virtual void pop_panel_title_text_color() = 0;
+
+        /**
+         * @brief Push a radio button label text color override.
+         * @note Applies to the normal/hover/active radio label text states.
+         *       Must be balanced with pop_radio_button_text_color().
+         */
+        virtual void push_radio_button_text_color(const UIColor& color) = 0;
+
+        /**
+         * @brief Pop the last radio button label text color override.
+         */
+        virtual void pop_radio_button_text_color() = 0;
+
+        /**
+         * @brief Push a regular button background color override.
+         * @note Applies to the normal/hover/active button background states.
+         *       Must be balanced with pop_button_background_color().
+         */
+        virtual void push_button_background_color(const UIColor& color) = 0;
+
+        /**
+         * @brief Pop the last regular button background color override.
+         */
+        virtual void pop_button_background_color() = 0;
+
+        /**
+         * @brief Push a regular button hover background color override.
+         * @note Applies to the button hover background state only.
+         *       Must be balanced with pop_button_hover_background_color().
+         */
+        virtual void push_button_hover_background_color(const UIColor& color) = 0;
+
+        /**
+         * @brief Pop the last regular button hover background color override.
+         */
+        virtual void pop_button_hover_background_color() = 0;
+
+        /**
+         * @brief Push a regular button clicked background color override.
+         * @note Applies to the button active/clicked background state only.
+         *       Must be balanced with pop_button_clicked_background_color().
+         */
+        virtual void push_button_clicked_background_color(const UIColor& color) = 0;
+
+        /**
+         * @brief Pop the last regular button clicked background color override.
+         */
+        virtual void pop_button_clicked_background_color() = 0;
+
+        /**
+         * @brief Push a button height override in pixels.
+         * @note Must be balanced with pop_button_height().
+         */
+        virtual void push_button_height(float height) = 0;
+
+        /**
+         * @brief Pop the last button height override.
+         */
+        virtual void pop_button_height() = 0;
+
+        /**
+         * @brief Push a button width override in pixels.
+         * @note The button remains centered within its parent panel row.
+         *       Values <= 0 fall back to full available row width.
+         *       Must be balanced with pop_button_width().
+         */
+        virtual void push_button_width(float width) = 0;
+
+        /**
+         * @brief Pop the last button width override.
+         */
+        virtual void pop_button_width() = 0;
+
+        /**
+         * @brief Push a button corner radius override in pixels.
+         * @note Must be balanced with pop_button_corner_radius().
+         */
+        virtual void push_button_corner_radius(float radius) = 0;
+
+        /**
+         * @brief Pop the last button corner radius override.
+         */
+        virtual void pop_button_corner_radius() = 0;
+
+        /**
+         * @brief Push a button border thickness override in pixels.
+         * @note Must be balanced with pop_button_border_thickness().
+         */
+        virtual void push_button_border_thickness(float thickness) = 0;
+
+        /**
+         * @brief Pop the last button border thickness override.
+         */
+        virtual void pop_button_border_thickness() = 0;
+
+        /**
+         * @brief Push a button content padding override in pixels.
+         * @note Must be balanced with pop_button_padding().
+         */
+        virtual void push_button_padding(const UIVec2& padding) = 0;
+
+        /**
+         * @brief Pop the last button content padding override.
+         */
+        virtual void pop_button_padding() = 0;
+
+        /**
+         * @brief Push a button rendering style override.
+         * @note Use ButtonStyle::Embossed for a beveled XP-style appearance.
+         *       Must be balanced with pop_button_style().
+         */
+        virtual void push_button_style(ButtonStyle style) = 0;
+
+        /**
+         * @brief Pop the last button rendering style override.
+         */
+        virtual void pop_button_style() = 0;
+
+        /**
+         * @brief Push a button bevel highlight color override.
+         * @note Used by embossed buttons for the top/left edge.
+         *       Must be balanced with pop_button_highlight_color().
+         */
+        virtual void push_button_highlight_color(const UIColor& color) = 0;
+
+        /**
+         * @brief Pop the last button bevel highlight color override.
+         */
+        virtual void pop_button_highlight_color() = 0;
+
+        /**
+         * @brief Push a button bevel shadow color override.
+         * @note Used by embossed buttons for the bottom/right edge.
+         *       Must be balanced with pop_button_shadow_color().
+         */
+        virtual void push_button_shadow_color(const UIColor& color) = 0;
+
+        /**
+         * @brief Pop the last button bevel shadow color override.
+         */
+        virtual void pop_button_shadow_color() = 0;
+
+        /**
+         * @brief Push a regular button border color override.
+         * @note Must be balanced with pop_button_border_color().
+         */
+        virtual void push_button_border_color(const UIColor& color) = 0;
+
+        /**
+         * @brief Pop the last regular button border color override.
+         */
+        virtual void pop_button_border_color() = 0;
+
+        /**
+         * @brief Push a regular button text color override.
+         * @note Applies to the normal/hover/active button text states.
+         *       Must be balanced with pop_button_text_color().
+         */
+        virtual void push_button_text_color(const UIColor& color) = 0;
+
+        /**
+         * @brief Pop the last regular button text color override.
+         */
+        virtual void pop_button_text_color() = 0;
+
+        /**
+         * @brief Push a text input box background color override.
+         * @note Applies to the normal/hover/active text input background states.
+         *       Must be balanced with pop_text_input_background_color().
+         */
+        virtual void push_text_input_background_color(const UIColor& color) = 0;
+
+        /**
+         * @brief Pop the last text input box background color override.
+         */
+        virtual void pop_text_input_background_color() = 0;
+
+        /**
+         * @brief Push a text input typing text color override.
+         * @note Applies to the editable text states, selected text states, and cursor-over-text states.
+         *       Must be balanced with pop_text_input_text_color().
+         */
+        virtual void push_text_input_text_color(const UIColor& color) = 0;
+
+        /**
+         * @brief Pop the last text input typing text color override.
+         */
+        virtual void pop_text_input_text_color() = 0;
     };
 
     /**

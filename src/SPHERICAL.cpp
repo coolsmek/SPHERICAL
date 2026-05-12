@@ -155,9 +155,59 @@ namespace {
     
     class UIPainterImpl : public Spherical::UIPainter {
     private:
+        struct PanelBodyStyleSnapshot {
+            nk_color background;
+            nk_style_item fixedBackground;
+        };
+
+        struct StyleItemStateSnapshot {
+            nk_style_item normal;
+            nk_style_item hover;
+            nk_style_item active;
+        };
+
+        struct ColorStateSnapshot {
+            nk_color normal;
+            nk_color hover;
+            nk_color active;
+        };
+
+        struct TextInputTextColorSnapshot {
+            nk_color cursorNormal;
+            nk_color cursorHover;
+            nk_color cursorTextNormal;
+            nk_color cursorTextHover;
+            nk_color textNormal;
+            nk_color textHover;
+            nk_color textActive;
+            nk_color selectedTextNormal;
+            nk_color selectedTextHover;
+        };
+
         nk_context* m_ctx = nullptr;
         VkExtent2D m_framebufferExtent{};
         const char* m_activePanelTitle = nullptr;
+        std::vector<nk_color> m_textColorStack;
+        std::vector<PanelBodyStyleSnapshot> m_panelBodyColorStack;
+        std::vector<StyleItemStateSnapshot> m_panelTitleBarColorStack;
+        std::vector<nk_color> m_panelBorderColorStack;
+        std::vector<ColorStateSnapshot> m_panelTitleTextColorStack;
+        std::vector<ColorStateSnapshot> m_radioButtonTextColorStack;
+        std::vector<StyleItemStateSnapshot> m_buttonBackgroundColorStack;
+        std::vector<nk_style_item> m_buttonHoverBackgroundColorStack;
+        std::vector<nk_style_item> m_buttonClickedBackgroundColorStack;
+        std::vector<float> m_buttonHeightStack;
+        std::vector<float> m_buttonWidthStack;
+        std::vector<float> m_buttonCornerRadiusStack;
+        std::vector<float> m_buttonBorderThicknessStack;
+        std::vector<struct nk_vec2> m_buttonPaddingStack;
+        std::vector<Spherical::ButtonStyle> m_buttonStyleStack;
+        std::vector<nk_color> m_buttonHighlightColorStack;
+        std::vector<nk_color> m_buttonShadowColorStack;
+        std::vector<nk_color> m_buttonBorderColorStack;
+        std::vector<ColorStateSnapshot> m_buttonTextColorStack;
+        std::vector<StyleItemStateSnapshot> m_textInputBackgroundColorStack;
+        std::vector<TextInputTextColorSnapshot> m_textInputTextColorStack;
 
         float current_font_height() const {
             if (m_ctx != nullptr && m_ctx->style.font != nullptr) {
@@ -180,7 +230,13 @@ namespace {
         }
 
         float button_row_height() const {
-            return std::ceil(current_font_height() * 2.25f);
+            const struct nk_vec2 padding = current_button_padding();
+            const float border = current_button_border_thickness();
+            const float requestedHeight = m_buttonHeightStack.empty()
+                ? std::ceil(current_font_height() * 2.25f)
+                : m_buttonHeightStack.back();
+            const float minHeight = std::ceil(current_font_height() + 2.0f * padding.y + 2.0f * border + 2.0f);
+            return std::max(requestedHeight, minHeight);
         }
 
         float spacing_row_height() const {
@@ -198,7 +254,40 @@ namespace {
             }
         }
 
-        void handle_vertical_scrollbar_drag(const char* title) {
+        void apply_active_vertical_scrollbar_drag(const char* title) {
+            if (m_ctx == nullptr || title == nullptr) {
+                return;
+            }
+
+            if (!g_scrollbarDrag.active || g_scrollbarDrag.windowTitle != title) {
+                return;
+            }
+
+            if (!IsLeftMouseDown(m_ctx)) {
+                release_scrollbar_drag_if_needed(title);
+                return;
+            }
+
+            if (g_scrollbarDrag.trackH <= 0.0f || g_scrollbarDrag.thumbH <= 0.0f || g_scrollbarDrag.maxScrollY <= 0.0f) {
+                return;
+            }
+
+            nk_uint scrollX = 0;
+            nk_uint scrollY = 0;
+            nk_window_get_scroll(m_ctx, &scrollX, &scrollY);
+
+            const float dragTravel = std::max(1.0f, g_scrollbarDrag.trackH - g_scrollbarDrag.thumbH);
+            float desiredThumbY = m_ctx->input.mouse.pos.y - g_scrollbarDrag.grabOffsetY;
+            desiredThumbY = std::clamp(desiredThumbY, g_scrollbarDrag.trackY, g_scrollbarDrag.trackY + dragTravel);
+
+            const float normalizedThumb = (desiredThumbY - g_scrollbarDrag.trackY) / dragTravel;
+            const float desiredScrollY = std::clamp(normalizedThumb * g_scrollbarDrag.maxScrollY, 0.0f, g_scrollbarDrag.maxScrollY);
+
+            nk_window_set_scroll(m_ctx, scrollX, static_cast<nk_uint>(desiredScrollY + 0.5f));
+            m_ctx->input.mouse.scroll_delta.y = 0.0f;
+        }
+
+        void refresh_vertical_scrollbar_drag_state(const char* title) {
             if (m_ctx == nullptr || title == nullptr) {
                 return;
             }
@@ -299,25 +388,483 @@ namespace {
                 }
             }
 
-            if (!g_scrollbarDrag.active || g_scrollbarDrag.windowTitle != title) {
+            if (g_scrollbarDrag.active && g_scrollbarDrag.windowTitle == title) {
+                g_scrollbarDrag.trackY = track.y;
+                g_scrollbarDrag.trackH = track.h;
+                g_scrollbarDrag.thumbH = thumb.h;
+                g_scrollbarDrag.maxScrollY = maxScrollY;
+                m_ctx->input.mouse.scroll_delta.y = 0.0f;
+            }
+        }
+        
+        static nk_color ToNkColor(const Spherical::UIColor& c) {
+            auto toByte = [](float v) -> nk_byte {
+                return static_cast<nk_byte>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f);
+            };
+            return nk_rgba(toByte(c.r), toByte(c.g), toByte(c.b), toByte(c.a));
+        }
+
+        static nk_style_item ToNkStyleItem(const Spherical::UIColor& c) {
+            return nk_style_item_color(ToNkColor(c));
+        }
+
+        static struct nk_vec2 ToNkVec2(const Spherical::UIVec2& v) {
+            return nk_vec2(v.x, v.y);
+        }
+
+        static nk_color BlendColor(const nk_color& from, const nk_color& to, float t) {
+            const float clampedT = std::clamp(t, 0.0f, 1.0f);
+            const auto blendChannel = [clampedT](nk_byte a, nk_byte b) -> nk_byte {
+                const float blended = static_cast<float>(a) + (static_cast<float>(b) - static_cast<float>(a)) * clampedT;
+                return static_cast<nk_byte>(std::clamp(blended, 0.0f, 255.0f) + 0.5f);
+            };
+            return nk_rgba(
+                blendChannel(from.r, to.r),
+                blendChannel(from.g, to.g),
+                blendChannel(from.b, to.b),
+                blendChannel(from.a, to.a));
+        }
+
+        static nk_color LightenColor(const nk_color& color, float amount) {
+            return BlendColor(color, nk_rgb(255, 255, 255), amount);
+        }
+
+        static nk_color DarkenColor(const nk_color& color, float amount) {
+            return BlendColor(color, nk_rgb(0, 0, 0), amount);
+        }
+
+        static nk_color GetStyleItemColor(const nk_style_item& item, const nk_color& fallback) {
+            if (item.type == NK_STYLE_ITEM_COLOR) {
+                return item.data.color;
+            }
+            return fallback;
+        }
+
+        float current_button_corner_radius() const {
+            if (!m_buttonCornerRadiusStack.empty()) {
+                return m_buttonCornerRadiusStack.back();
+            }
+            return (m_ctx != nullptr) ? m_ctx->style.button.rounding : 0.0f;
+        }
+
+        float current_button_width(float availableWidth) const {
+            if (m_buttonWidthStack.empty()) {
+                return availableWidth;
+            }
+
+            const float requestedWidth = m_buttonWidthStack.back();
+            if (requestedWidth <= 0.0f) {
+                return availableWidth;
+            }
+
+            return std::min(requestedWidth, availableWidth);
+        }
+
+        float current_button_border_thickness() const {
+            if (!m_buttonBorderThicknessStack.empty()) {
+                return m_buttonBorderThicknessStack.back();
+            }
+            return (m_ctx != nullptr) ? m_ctx->style.button.border : 0.0f;
+        }
+
+        struct nk_vec2 current_button_padding() const {
+            if (!m_buttonPaddingStack.empty()) {
+                return m_buttonPaddingStack.back();
+            }
+            return (m_ctx != nullptr) ? m_ctx->style.button.padding : nk_vec2(10.0f, 6.0f);
+        }
+
+        Spherical::ButtonStyle current_button_style() const {
+            if (!m_buttonStyleStack.empty()) {
+                return m_buttonStyleStack.back();
+            }
+            return Spherical::ButtonStyle::Flat;
+        }
+
+        nk_color current_button_highlight_color(const nk_color& baseColor) const {
+            if (!m_buttonHighlightColorStack.empty()) {
+                return m_buttonHighlightColorStack.back();
+            }
+            return LightenColor(baseColor, 0.55f);
+        }
+
+        nk_color current_button_shadow_color(const nk_color& baseColor) const {
+            if (!m_buttonShadowColorStack.empty()) {
+                return m_buttonShadowColorStack.back();
+            }
+            return DarkenColor(baseColor, 0.45f);
+        }
+
+        void draw_button_bevel(nk_command_buffer* buffer, const struct nk_rect& bounds, float borderThickness,
+                               const nk_color& baseColor, bool pressed) const {
+            if (buffer == nullptr || bounds.w <= 2.0f || bounds.h <= 2.0f) {
                 return;
             }
 
-            const float dragTravel = std::max(1.0f, g_scrollbarDrag.trackH - g_scrollbarDrag.thumbH);
+            const float inset = std::max(1.0f, borderThickness);
+            const float left = bounds.x + inset;
+            const float top = bounds.y + inset;
+            const float right = bounds.x + bounds.w - inset - 1.0f;
+            const float bottom = bounds.y + bounds.h - inset - 1.0f;
+            if (right <= left || bottom <= top) {
+                return;
+            }
 
-            float desiredThumbY = m_ctx->input.mouse.pos.y - g_scrollbarDrag.grabOffsetY;
-            desiredThumbY = std::clamp(desiredThumbY, g_scrollbarDrag.trackY, g_scrollbarDrag.trackY + dragTravel);
+            nk_color topLeft = current_button_highlight_color(baseColor);
+            nk_color bottomRight = current_button_shadow_color(baseColor);
+            if (pressed) {
+                std::swap(topLeft, bottomRight);
+            }
 
+            nk_stroke_line(buffer, left, top, right, top, 1.0f, topLeft);
+            nk_stroke_line(buffer, left, top, left, bottom, 1.0f, topLeft);
+            nk_stroke_line(buffer, left, bottom, right, bottom, 1.0f, bottomRight);
+            nk_stroke_line(buffer, right, top, right, bottom, 1.0f, bottomRight);
 
-            const float normalizedThumb = (desiredThumbY - g_scrollbarDrag.trackY) / dragTravel;
-            const float desiredScrollY = std::clamp(normalizedThumb * g_scrollbarDrag.maxScrollY, 0.0f, g_scrollbarDrag.maxScrollY);
-
-            nk_window_set_scroll(m_ctx, scrollX, static_cast<nk_uint>(desiredScrollY + 0.5f));
-            m_ctx->input.mouse.scroll_delta.y = 0.0f;
+            if ((right - left) >= 4.0f && (bottom - top) >= 4.0f) {
+                const float innerLeft = left + 1.0f;
+                const float innerTop = top + 1.0f;
+                const float innerRight = right - 1.0f;
+                const float innerBottom = bottom - 1.0f;
+                const nk_color softTopLeft = BlendColor(topLeft, baseColor, 0.45f);
+                const nk_color softBottomRight = BlendColor(bottomRight, baseColor, 0.45f);
+                nk_stroke_line(buffer, innerLeft, innerTop, innerRight, innerTop, 1.0f, softTopLeft);
+                nk_stroke_line(buffer, innerLeft, innerTop, innerLeft, innerBottom, 1.0f, softTopLeft);
+                nk_stroke_line(buffer, innerLeft, innerBottom, innerRight, innerBottom, 1.0f, softBottomRight);
+                nk_stroke_line(buffer, innerRight, innerTop, innerRight, innerBottom, 1.0f, softBottomRight);
+            }
         }
+
+        bool draw_custom_button(const char* label) {
+            if (m_ctx == nullptr || m_ctx->current == nullptr || m_ctx->current->layout == nullptr) {
+                return false;
+            }
+
+            nk_window* win = m_ctx->current;
+            nk_panel* layout = win->layout;
+            const nk_style_button* style = &m_ctx->style.button;
+
+            struct nk_rect bounds{};
+            const nk_widget_layout_states widgetState = nk_widget(&bounds, m_ctx);
+            if (!widgetState) {
+                return false;
+            }
+
+            const float centeredWidth = current_button_width(bounds.w);
+            if (centeredWidth < bounds.w) {
+                bounds.x += std::max(0.0f, (bounds.w - centeredWidth) * 0.5f);
+                bounds.w = centeredWidth;
+            }
+
+            const bool isReadOnly = (widgetState == NK_WIDGET_DISABLED) || ((layout->flags & NK_WINDOW_ROM) != 0);
+            const bool hovered = !isReadOnly && IsMouseInsideRect(m_ctx, bounds);
+            const bool pressed = hovered && IsLeftMouseDown(m_ctx);
+            const bool activated = hovered && WasLeftMousePressed(m_ctx);
+
+            const nk_style_item& backgroundItem = pressed ? style->active : (hovered ? style->hover : style->normal);
+            const nk_color fallbackBackground = pressed ? m_ctx->style.button.text_background : m_ctx->style.window.background;
+            const nk_color backgroundColor = GetStyleItemColor(backgroundItem, fallbackBackground);
+            const float borderThickness = std::max(0.0f, current_button_border_thickness());
+            const float cornerRadius = std::max(0.0f, current_button_corner_radius());
+            const struct nk_vec2 padding = current_button_padding();
+
+            nk_fill_rect(&win->buffer, bounds, cornerRadius, backgroundColor);
+
+            if (current_button_style() == Spherical::ButtonStyle::Embossed) {
+                draw_button_bevel(&win->buffer, bounds, borderThickness, backgroundColor, pressed);
+            }
+
+            if (borderThickness > 0.0f) {
+                nk_stroke_rect(&win->buffer, bounds, cornerRadius, borderThickness, style->border_color);
+            }
+
+            const nk_color labelColor = pressed ? style->text_active : (hovered ? style->text_hover : style->text_normal);
+            const nk_user_font* buttonFont = m_ctx->style.font;
+            if (buttonFont == nullptr) {
+                buttonFont = Spherical::FontRenderer::GetFontHandle(Spherical::FontStyle::Regular);
+            }
+            if (buttonFont != nullptr && label != nullptr) {
+                const int labelLength = static_cast<int>(std::strlen(label));
+                const float contentX = bounds.x + borderThickness + padding.x;
+                const float contentY = bounds.y + borderThickness + padding.y;
+                const float contentW = std::max(1.0f, bounds.w - 2.0f * (borderThickness + padding.x));
+                const float contentH = std::max(1.0f, bounds.h - 2.0f * (borderThickness + padding.y));
+                float textX = contentX;
+                const float textWidth = buttonFont->width(buttonFont->userdata, buttonFont->height, label, labelLength);
+                if (style->text_alignment & NK_TEXT_ALIGN_CENTERED) {
+                    textX = contentX + std::max(0.0f, (contentW - textWidth) * 0.5f);
+                } else if (style->text_alignment & NK_TEXT_ALIGN_RIGHT) {
+                    textX = std::max(contentX, contentX + contentW - textWidth);
+                }
+
+                float textY = contentY;
+                if (style->text_alignment & NK_TEXT_ALIGN_BOTTOM) {
+                    textY = contentY + std::max(0.0f, contentH - buttonFont->height);
+                } else {
+                    textY = contentY + std::max(0.0f, (contentH - buttonFont->height) * 0.5f);
+                }
+
+                struct nk_rect labelBounds = nk_rect(textX, textY, std::max(1.0f, contentW), buttonFont->height);
+                if (pressed) {
+                    labelBounds.x += 1.0f;
+                    labelBounds.y += 1.0f;
+                }
+                nk_draw_text(&win->buffer, labelBounds, label, labelLength, buttonFont, nk_rgba(0, 0, 0, 0), labelColor);
+            }
+
+            return activated != 0;
+        }
+
+        void restore_last_text_color() {
+            if (m_ctx == nullptr || m_textColorStack.empty()) {
+                return;
+            }
+            m_ctx->style.text.color = m_textColorStack.back();
+            m_textColorStack.pop_back();
+        }
+
+        void restore_last_panel_body_color() {
+            if (m_ctx == nullptr || m_panelBodyColorStack.empty()) {
+                return;
+            }
+            const PanelBodyStyleSnapshot snapshot = m_panelBodyColorStack.back();
+            m_panelBodyColorStack.pop_back();
+            m_ctx->style.window.background = snapshot.background;
+            m_ctx->style.window.fixed_background = snapshot.fixedBackground;
+        }
+
+        void restore_last_panel_title_bar_color() {
+            if (m_ctx == nullptr || m_panelTitleBarColorStack.empty()) {
+                return;
+            }
+            const StyleItemStateSnapshot snapshot = m_panelTitleBarColorStack.back();
+            m_panelTitleBarColorStack.pop_back();
+            m_ctx->style.window.header.normal = snapshot.normal;
+            m_ctx->style.window.header.hover = snapshot.hover;
+            m_ctx->style.window.header.active = snapshot.active;
+        }
+
+        void restore_last_panel_border_color() {
+            if (m_ctx == nullptr || m_panelBorderColorStack.empty()) {
+                return;
+            }
+            m_ctx->style.window.border_color = m_panelBorderColorStack.back();
+            m_panelBorderColorStack.pop_back();
+        }
+
+        void restore_last_panel_title_text_color() {
+            if (m_ctx == nullptr || m_panelTitleTextColorStack.empty()) {
+                return;
+            }
+            const ColorStateSnapshot snapshot = m_panelTitleTextColorStack.back();
+            m_panelTitleTextColorStack.pop_back();
+            m_ctx->style.window.header.label_normal = snapshot.normal;
+            m_ctx->style.window.header.label_hover = snapshot.hover;
+            m_ctx->style.window.header.label_active = snapshot.active;
+        }
+
+        void restore_last_radio_button_text_color() {
+            if (m_ctx == nullptr || m_radioButtonTextColorStack.empty()) {
+                return;
+            }
+            const ColorStateSnapshot snapshot = m_radioButtonTextColorStack.back();
+            m_radioButtonTextColorStack.pop_back();
+            m_ctx->style.option.text_normal = snapshot.normal;
+            m_ctx->style.option.text_hover = snapshot.hover;
+            m_ctx->style.option.text_active = snapshot.active;
+        }
+
+        void restore_last_button_background_color() {
+            if (m_ctx == nullptr || m_buttonBackgroundColorStack.empty()) {
+                return;
+            }
+            const StyleItemStateSnapshot snapshot = m_buttonBackgroundColorStack.back();
+            m_buttonBackgroundColorStack.pop_back();
+            m_ctx->style.button.normal = snapshot.normal;
+            m_ctx->style.button.hover = snapshot.hover;
+            m_ctx->style.button.active = snapshot.active;
+        }
+
+        void restore_last_button_hover_background_color() {
+            if (m_ctx == nullptr || m_buttonHoverBackgroundColorStack.empty()) {
+                return;
+            }
+            m_ctx->style.button.hover = m_buttonHoverBackgroundColorStack.back();
+            m_buttonHoverBackgroundColorStack.pop_back();
+        }
+
+        void restore_last_button_clicked_background_color() {
+            if (m_ctx == nullptr || m_buttonClickedBackgroundColorStack.empty()) {
+                return;
+            }
+            m_ctx->style.button.active = m_buttonClickedBackgroundColorStack.back();
+            m_buttonClickedBackgroundColorStack.pop_back();
+        }
+
+        void restore_last_button_height() {
+            if (!m_buttonHeightStack.empty()) {
+                m_buttonHeightStack.pop_back();
+            }
+        }
+
+        void restore_last_button_width() {
+            if (!m_buttonWidthStack.empty()) {
+                m_buttonWidthStack.pop_back();
+            }
+        }
+
+        void restore_last_button_corner_radius() {
+            if (!m_buttonCornerRadiusStack.empty()) {
+                m_buttonCornerRadiusStack.pop_back();
+            }
+        }
+
+        void restore_last_button_border_thickness() {
+            if (!m_buttonBorderThicknessStack.empty()) {
+                m_buttonBorderThicknessStack.pop_back();
+            }
+        }
+
+        void restore_last_button_padding() {
+            if (!m_buttonPaddingStack.empty()) {
+                m_buttonPaddingStack.pop_back();
+            }
+        }
+
+        void restore_last_button_style() {
+            if (!m_buttonStyleStack.empty()) {
+                m_buttonStyleStack.pop_back();
+            }
+        }
+
+        void restore_last_button_highlight_color() {
+            if (!m_buttonHighlightColorStack.empty()) {
+                m_buttonHighlightColorStack.pop_back();
+            }
+        }
+
+        void restore_last_button_shadow_color() {
+            if (!m_buttonShadowColorStack.empty()) {
+                m_buttonShadowColorStack.pop_back();
+            }
+        }
+
+        void restore_last_button_border_color() {
+            if (m_ctx == nullptr || m_buttonBorderColorStack.empty()) {
+                return;
+            }
+            m_ctx->style.button.border_color = m_buttonBorderColorStack.back();
+            m_buttonBorderColorStack.pop_back();
+        }
+
+        void restore_last_button_text_color() {
+            if (m_ctx == nullptr || m_buttonTextColorStack.empty()) {
+                return;
+            }
+            const ColorStateSnapshot snapshot = m_buttonTextColorStack.back();
+            m_buttonTextColorStack.pop_back();
+            m_ctx->style.button.text_normal = snapshot.normal;
+            m_ctx->style.button.text_hover = snapshot.hover;
+            m_ctx->style.button.text_active = snapshot.active;
+        }
+
+        void restore_last_text_input_background_color() {
+            if (m_ctx == nullptr || m_textInputBackgroundColorStack.empty()) {
+                return;
+            }
+            const StyleItemStateSnapshot snapshot = m_textInputBackgroundColorStack.back();
+            m_textInputBackgroundColorStack.pop_back();
+            m_ctx->style.edit.normal = snapshot.normal;
+            m_ctx->style.edit.hover = snapshot.hover;
+            m_ctx->style.edit.active = snapshot.active;
+        }
+
+        void restore_last_text_input_text_color() {
+            if (m_ctx == nullptr || m_textInputTextColorStack.empty()) {
+                return;
+            }
+            const TextInputTextColorSnapshot snapshot = m_textInputTextColorStack.back();
+            m_textInputTextColorStack.pop_back();
+            m_ctx->style.edit.cursor_text_normal = snapshot.cursorTextNormal;
+            m_ctx->style.edit.cursor_text_hover = snapshot.cursorTextHover;
+            m_ctx->style.edit.text_normal = snapshot.textNormal;
+            m_ctx->style.edit.text_hover = snapshot.textHover;
+            m_ctx->style.edit.text_active = snapshot.textActive;
+            m_ctx->style.edit.selected_text_normal = snapshot.selectedTextNormal;
+            m_ctx->style.edit.selected_text_hover = snapshot.selectedTextHover;
+            m_ctx->style.edit.cursor_normal = snapshot.cursorNormal;
+            m_ctx->style.edit.cursor_hover = snapshot.cursorHover;
+        }
+        
 
     public:
         UIPainterImpl(nk_context* ctx, VkExtent2D extent) : m_ctx(ctx), m_framebufferExtent(extent) {}
+
+        ~UIPainterImpl() override {
+            while (!m_textInputTextColorStack.empty()) {
+                restore_last_text_input_text_color();
+            }
+            while (!m_textInputBackgroundColorStack.empty()) {
+                restore_last_text_input_background_color();
+            }
+            while (!m_buttonShadowColorStack.empty()) {
+                restore_last_button_shadow_color();
+            }
+            while (!m_buttonHighlightColorStack.empty()) {
+                restore_last_button_highlight_color();
+            }
+            while (!m_buttonStyleStack.empty()) {
+                restore_last_button_style();
+            }
+            while (!m_buttonPaddingStack.empty()) {
+                restore_last_button_padding();
+            }
+            while (!m_buttonBorderThicknessStack.empty()) {
+                restore_last_button_border_thickness();
+            }
+            while (!m_buttonCornerRadiusStack.empty()) {
+                restore_last_button_corner_radius();
+            }
+            while (!m_buttonWidthStack.empty()) {
+                restore_last_button_width();
+            }
+            while (!m_buttonHeightStack.empty()) {
+                restore_last_button_height();
+            }
+            while (!m_buttonTextColorStack.empty()) {
+                restore_last_button_text_color();
+            }
+            while (!m_buttonBorderColorStack.empty()) {
+                restore_last_button_border_color();
+            }
+            while (!m_buttonClickedBackgroundColorStack.empty()) {
+                restore_last_button_clicked_background_color();
+            }
+            while (!m_buttonHoverBackgroundColorStack.empty()) {
+                restore_last_button_hover_background_color();
+            }
+            while (!m_buttonBackgroundColorStack.empty()) {
+                restore_last_button_background_color();
+            }
+            while (!m_radioButtonTextColorStack.empty()) {
+                restore_last_radio_button_text_color();
+            }
+            while (!m_panelTitleTextColorStack.empty()) {
+                restore_last_panel_title_text_color();
+            }
+            while (!m_panelBorderColorStack.empty()) {
+                restore_last_panel_border_color();
+            }
+            while (!m_panelTitleBarColorStack.empty()) {
+                restore_last_panel_title_bar_color();
+            }
+            while (!m_panelBodyColorStack.empty()) {
+                restore_last_panel_body_color();
+            }
+            while (!m_textColorStack.empty()) {
+                restore_last_text_color();
+            }
+        }
 
         bool begin_panel(const char* title, int x, int y, int width, int height) override {
             // Use the title font for the panel header
@@ -326,7 +873,11 @@ namespace {
             // Pop back to the regular font for the panel content
             pop_font();
 
-            // Defer drag handling until end_panel so layout metrics (panel->at_y) include all widgets.
+            if (result) {
+                apply_active_vertical_scrollbar_drag(title);
+            }
+
+            // Keep the active panel title so end_panel can refresh scrollbar metrics after content layout.
             m_activePanelTitle = result ? title : nullptr;
             if (!result) {
                 release_scrollbar_drag_if_needed(title);
@@ -337,8 +888,8 @@ namespace {
 
         void end_panel() override {
             if (m_activePanelTitle != nullptr) {
-                // Apply custom drag while the panel is still active/current.
-                handle_vertical_scrollbar_drag(m_activePanelTitle);
+                // Refresh drag geometry and detect drag-start after content layout is known for this frame.
+                refresh_vertical_scrollbar_drag_state(m_activePanelTitle);
             }
             nk_end(m_ctx);
             m_activePanelTitle = nullptr;
@@ -470,7 +1021,7 @@ namespace {
 
         bool button(const char* label) override {
             nk_layout_row_dynamic(m_ctx, button_row_height(), 1);
-            return nk_button_label(m_ctx, label) != 0;
+            return draw_custom_button(label != nullptr ? label : "");
         }
 
         void text_input(const char* label, char* buffer, size_t bufferSize) override {
@@ -509,6 +1060,298 @@ namespace {
         uint32_t get_framebuffer_height() const override {
             return m_framebufferExtent.height;
         }
+        
+        void push_text_color(const Spherical::UIColor& color) override
+        {
+            if (m_ctx == nullptr) {
+                return;
+            }
+            m_textColorStack.push_back(m_ctx->style.text.color);
+            m_ctx->style.text.color = ToNkColor(color);
+        };
+        
+        void pop_text_color() override {
+            restore_last_text_color();
+        };
+
+        void push_panel_body_color(const Spherical::UIColor& color) override {
+            if (m_ctx == nullptr) {
+                return;
+            }
+            m_panelBodyColorStack.push_back({
+                m_ctx->style.window.background,
+                m_ctx->style.window.fixed_background
+            });
+            m_ctx->style.window.background = ToNkColor(color);
+            m_ctx->style.window.fixed_background = ToNkStyleItem(color);
+        };
+        
+        void pop_panel_body_color() override {
+            restore_last_panel_body_color();
+        };
+
+        void push_panel_title_bar_color(const Spherical::UIColor& color) override {
+            if (m_ctx == nullptr) {
+                return;
+            }
+            m_panelTitleBarColorStack.push_back({
+                m_ctx->style.window.header.normal,
+                m_ctx->style.window.header.hover,
+                m_ctx->style.window.header.active
+            });
+
+            const nk_style_item styleItem = ToNkStyleItem(color);
+            m_ctx->style.window.header.normal = styleItem;
+            m_ctx->style.window.header.hover = styleItem;
+            m_ctx->style.window.header.active = styleItem;
+        };
+
+        void pop_panel_title_bar_color() override {
+            restore_last_panel_title_bar_color();
+        };
+
+        void push_panel_border_color(const Spherical::UIColor& color) override {
+            if (m_ctx == nullptr) {
+                return;
+            }
+            m_panelBorderColorStack.push_back(m_ctx->style.window.border_color);
+            m_ctx->style.window.border_color = ToNkColor(color);
+        };
+
+        void pop_panel_border_color() override {
+            restore_last_panel_border_color();
+        };
+
+        void push_panel_title_text_color(const Spherical::UIColor& color) override {
+            if (m_ctx == nullptr) {
+                return;
+            }
+            m_panelTitleTextColorStack.push_back({
+                m_ctx->style.window.header.label_normal,
+                m_ctx->style.window.header.label_hover,
+                m_ctx->style.window.header.label_active
+            });
+
+            const nk_color nkColor = ToNkColor(color);
+            m_ctx->style.window.header.label_normal = nkColor;
+            m_ctx->style.window.header.label_hover = nkColor;
+            m_ctx->style.window.header.label_active = nkColor;
+        };
+
+        void pop_panel_title_text_color() override {
+            restore_last_panel_title_text_color();
+        };
+
+        void push_radio_button_text_color(const Spherical::UIColor& color) override {
+            if (m_ctx == nullptr) {
+                return;
+            }
+            m_radioButtonTextColorStack.push_back({
+                m_ctx->style.option.text_normal,
+                m_ctx->style.option.text_hover,
+                m_ctx->style.option.text_active
+            });
+
+            const nk_color nkColor = ToNkColor(color);
+            m_ctx->style.option.text_normal = nkColor;
+            m_ctx->style.option.text_hover = nkColor;
+            m_ctx->style.option.text_active = nkColor;
+        };
+
+        void pop_radio_button_text_color() override {
+            restore_last_radio_button_text_color();
+        };
+
+        void push_button_background_color(const Spherical::UIColor& color) override {
+            if (m_ctx == nullptr) {
+                return;
+            }
+            m_buttonBackgroundColorStack.push_back({
+                m_ctx->style.button.normal,
+                m_ctx->style.button.hover,
+                m_ctx->style.button.active
+            });
+
+            const nk_style_item styleItem = ToNkStyleItem(color);
+            m_ctx->style.button.normal = styleItem;
+            m_ctx->style.button.hover = styleItem;
+            m_ctx->style.button.active = styleItem;
+        };
+
+        void pop_button_background_color() override {
+            restore_last_button_background_color();
+        };
+
+        void push_button_hover_background_color(const Spherical::UIColor& color) override {
+            if (m_ctx == nullptr) {
+                return;
+            }
+            m_buttonHoverBackgroundColorStack.push_back(m_ctx->style.button.hover);
+            m_ctx->style.button.hover = ToNkStyleItem(color);
+        };
+
+        void pop_button_hover_background_color() override {
+            restore_last_button_hover_background_color();
+        };
+
+        void push_button_clicked_background_color(const Spherical::UIColor& color) override {
+            if (m_ctx == nullptr) {
+                return;
+            }
+            m_buttonClickedBackgroundColorStack.push_back(m_ctx->style.button.active);
+            m_ctx->style.button.active = ToNkStyleItem(color);
+        };
+
+        void pop_button_clicked_background_color() override {
+            restore_last_button_clicked_background_color();
+        };
+
+        void push_button_height(float height) override {
+            m_buttonHeightStack.push_back(std::max(1.0f, height));
+        };
+
+        void pop_button_height() override {
+            restore_last_button_height();
+        };
+
+        void push_button_width(float width) override {
+            m_buttonWidthStack.push_back(width);
+        };
+
+        void pop_button_width() override {
+            restore_last_button_width();
+        };
+
+        void push_button_corner_radius(float radius) override {
+            m_buttonCornerRadiusStack.push_back(std::max(0.0f, radius));
+        };
+
+        void pop_button_corner_radius() override {
+            restore_last_button_corner_radius();
+        };
+
+        void push_button_border_thickness(float thickness) override {
+            m_buttonBorderThicknessStack.push_back(std::max(0.0f, thickness));
+        };
+
+        void pop_button_border_thickness() override {
+            restore_last_button_border_thickness();
+        };
+
+        void push_button_padding(const Spherical::UIVec2& padding) override {
+            m_buttonPaddingStack.push_back(ToNkVec2({std::max(0.0f, padding.x), std::max(0.0f, padding.y)}));
+        };
+
+        void pop_button_padding() override {
+            restore_last_button_padding();
+        };
+
+        void push_button_style(Spherical::ButtonStyle style) override {
+            m_buttonStyleStack.push_back(style);
+        };
+
+        void pop_button_style() override {
+            restore_last_button_style();
+        };
+
+        void push_button_highlight_color(const Spherical::UIColor& color) override {
+            m_buttonHighlightColorStack.push_back(ToNkColor(color));
+        };
+
+        void pop_button_highlight_color() override {
+            restore_last_button_highlight_color();
+        };
+
+        void push_button_shadow_color(const Spherical::UIColor& color) override {
+            m_buttonShadowColorStack.push_back(ToNkColor(color));
+        };
+
+        void pop_button_shadow_color() override {
+            restore_last_button_shadow_color();
+        };
+
+        void push_button_border_color(const Spherical::UIColor& color) override {
+            if (m_ctx == nullptr) {
+                return;
+            }
+            m_buttonBorderColorStack.push_back(m_ctx->style.button.border_color);
+            m_ctx->style.button.border_color = ToNkColor(color);
+        };
+
+        void pop_button_border_color() override {
+            restore_last_button_border_color();
+        };
+
+        void push_button_text_color(const Spherical::UIColor& color) override {
+            if (m_ctx == nullptr) {
+                return;
+            }
+            m_buttonTextColorStack.push_back({
+                m_ctx->style.button.text_normal,
+                m_ctx->style.button.text_hover,
+                m_ctx->style.button.text_active
+            });
+
+            const nk_color nkColor = ToNkColor(color);
+            m_ctx->style.button.text_normal = nkColor;
+            m_ctx->style.button.text_hover = nkColor;
+            m_ctx->style.button.text_active = nkColor;
+        };
+
+        void pop_button_text_color() override {
+            restore_last_button_text_color();
+        };
+
+        void push_text_input_background_color(const Spherical::UIColor& color) override {
+            if (m_ctx == nullptr) {
+                return;
+            }
+            m_textInputBackgroundColorStack.push_back({
+                m_ctx->style.edit.normal,
+                m_ctx->style.edit.hover,
+                m_ctx->style.edit.active
+            });
+
+            const nk_style_item styleItem = ToNkStyleItem(color);
+            m_ctx->style.edit.normal = styleItem;
+            m_ctx->style.edit.hover = styleItem;
+            m_ctx->style.edit.active = styleItem;
+        };
+
+        void pop_text_input_background_color() override {
+            restore_last_text_input_background_color();
+        };
+
+        void push_text_input_text_color(const Spherical::UIColor& color) override {
+            if (m_ctx == nullptr) {
+                return;
+            }
+            m_textInputTextColorStack.push_back({
+                m_ctx->style.edit.cursor_normal,
+                m_ctx->style.edit.cursor_hover,
+                m_ctx->style.edit.cursor_text_normal,
+                m_ctx->style.edit.cursor_text_hover,
+                m_ctx->style.edit.text_normal,
+                m_ctx->style.edit.text_hover,
+                m_ctx->style.edit.text_active,
+                m_ctx->style.edit.selected_text_normal,
+                m_ctx->style.edit.selected_text_hover
+            });
+
+            const nk_color nkColor = ToNkColor(color);
+            m_ctx->style.edit.cursor_text_normal = nkColor;
+            m_ctx->style.edit.cursor_text_hover = nkColor;
+            m_ctx->style.edit.text_normal = nkColor;
+            m_ctx->style.edit.text_hover = nkColor;
+            m_ctx->style.edit.text_active = nkColor;
+            m_ctx->style.edit.selected_text_normal = nkColor;
+            m_ctx->style.edit.selected_text_hover = nkColor;
+        };
+
+        void pop_text_input_text_color() override {
+            restore_last_text_input_text_color();
+        };
+        
     };
 
     bool IsDeviceSuitable(VkPhysicalDevice device) {

@@ -22,8 +22,8 @@ namespace {
     constexpr float kPointsPerInch = 72.0f;
     
     //Font sizes
-    constexpr float kRegularPointSize = 12.0f;
-    constexpr float kTitlePointSize = 16.0f;
+    constexpr float kRegularPointSize = 11.0f;
+    constexpr float kTitlePointSize = 13.0f;
     
     constexpr float kMinimumDpiScale = 1.0f;
     constexpr float kMaximumDpiScale = 4.0f;
