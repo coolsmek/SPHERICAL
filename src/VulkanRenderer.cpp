@@ -1,4 +1,5 @@
 ﻿#include "VulkanRenderer.h"
+#include "FontRenderer.h"
 
 #include <array>
 #include <fstream>
@@ -6,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <cstddef>
+#include <functional>
 
 #ifndef SPHERICAL_SHADER_DIR
 #define SPHERICAL_SHADER_DIR ""
@@ -62,7 +64,9 @@ namespace {
         
         // Pipeline and layout
         VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-        VkPipeline pipeline = VK_NULL_HANDLE;
+        VkPipeline uiPipeline = VK_NULL_HANDLE;
+        VkPipeline msdfPipeline = VK_NULL_HANDLE;
+        VkPipeline grayscalePipeline = VK_NULL_HANDLE;
         
         // Vertex and index buffers for nk_convert() output
         VkBuffer vertexBuffer = VK_NULL_HANDLE;
@@ -77,8 +81,11 @@ namespace {
         // Descriptor set for font sampler
         VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
         VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-        VkSampler fontSampler = VK_NULL_HANDLE;
+        VkDescriptorSet fontDescriptorSet = VK_NULL_HANDLE;
+        VkDescriptorSet nullDescriptorSet = VK_NULL_HANDLE;
+        VkSampler msdfFontSampler = VK_NULL_HANDLE;
+        VkSampler grayscaleFontSampler = VK_NULL_HANDLE;
+        VkSampler uiSampler = VK_NULL_HANDLE;
         
         // Font texture
         VkImageView fontAtlasView = VK_NULL_HANDLE;
@@ -165,6 +172,220 @@ namespace {
         }
     }
 
+    bool ExecuteSingleTimeCommands(const std::function<void(VkCommandBuffer)>& recordCommands) {
+        if (g_rendererState.device == VK_NULL_HANDLE || g_rendererState.commandPool == VK_NULL_HANDLE ||
+            g_rendererState.graphicsQueue == VK_NULL_HANDLE) {
+            return false;
+        }
+
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.commandPool = g_rendererState.commandPool;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandBufferCount = 1;
+
+        VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+        if (vkAllocateCommandBuffers(g_rendererState.device, &allocInfo, &commandBuffer) != VK_SUCCESS) {
+            return false;
+        }
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+        if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+            vkFreeCommandBuffers(g_rendererState.device, g_rendererState.commandPool, 1, &commandBuffer);
+            return false;
+        }
+
+        recordCommands(commandBuffer);
+
+        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+            vkFreeCommandBuffers(g_rendererState.device, g_rendererState.commandPool, 1, &commandBuffer);
+            return false;
+        }
+
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
+
+        const bool submitted = vkQueueSubmit(g_rendererState.graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) == VK_SUCCESS &&
+                               vkQueueWaitIdle(g_rendererState.graphicsQueue) == VK_SUCCESS;
+
+        vkFreeCommandBuffers(g_rendererState.device, g_rendererState.commandPool, 1, &commandBuffer);
+        return submitted;
+    }
+
+    bool CreateImage(VkImage& image, VkDeviceMemory& memory, uint32_t width, uint32_t height,
+                     VkFormat format, VkImageUsageFlags usage) {
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.extent = {width, height, 1};
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.format = format;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageInfo.usage = usage;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+
+        if (vkCreateImage(g_rendererState.device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
+            return false;
+        }
+
+        VkMemoryRequirements memRequirements{};
+        vkGetImageMemoryRequirements(g_rendererState.device, image, &memRequirements);
+
+        const uint32_t memoryType = FindMemoryType(g_rendererState.physicalDevice, memRequirements.memoryTypeBits,
+                                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (memoryType == 0xFFFFFFFF) {
+            vkDestroyImage(g_rendererState.device, image, nullptr);
+            image = VK_NULL_HANDLE;
+            return false;
+        }
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = memoryType;
+
+        if (vkAllocateMemory(g_rendererState.device, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
+            vkDestroyImage(g_rendererState.device, image, nullptr);
+            image = VK_NULL_HANDLE;
+            return false;
+        }
+
+        if (vkBindImageMemory(g_rendererState.device, image, memory, 0) != VK_SUCCESS) {
+            vkFreeMemory(g_rendererState.device, memory, nullptr);
+            vkDestroyImage(g_rendererState.device, image, nullptr);
+            memory = VK_NULL_HANDLE;
+            image = VK_NULL_HANDLE;
+            return false;
+        }
+
+        return true;
+    }
+
+    bool CreateImageView(VkImageView& imageView, VkImage image, VkFormat format) {
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = format;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+        return vkCreateImageView(g_rendererState.device, &viewInfo, nullptr, &imageView) == VK_SUCCESS;
+    }
+
+    bool TransitionImageLayout(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout) {
+        return ExecuteSingleTimeCommands([&](VkCommandBuffer commandBuffer) {
+            VkImageMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.oldLayout = oldLayout;
+            barrier.newLayout = newLayout;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = image;
+            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            barrier.subresourceRange.baseMipLevel = 0;
+            barrier.subresourceRange.levelCount = 1;
+            barrier.subresourceRange.baseArrayLayer = 0;
+            barrier.subresourceRange.layerCount = 1;
+
+            VkPipelineStageFlags sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            VkPipelineStageFlags destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+
+            if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+                barrier.srcAccessMask = 0;
+                barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+                barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+                destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            }
+
+            vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0,
+                                 0, nullptr, 0, nullptr, 1, &barrier);
+        });
+    }
+
+    bool CopyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) {
+        return ExecuteSingleTimeCommands([&](VkCommandBuffer commandBuffer) {
+            VkBufferImageCopy region{};
+            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.mipLevel = 0;
+            region.imageSubresource.baseArrayLayer = 0;
+            region.imageSubresource.layerCount = 1;
+            region.imageOffset = {0, 0, 0};
+            region.imageExtent = {width, height, 1};
+            vkCmdCopyBufferToImage(commandBuffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        });
+    }
+
+    bool UpdateDescriptorSet(VkDescriptorSet descriptorSet, VkSampler sampler, VkImageView imageView) {
+        if (descriptorSet == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE || imageView == VK_NULL_HANDLE) {
+            return false;
+        }
+
+        VkDescriptorImageInfo imageInfo{};
+        imageInfo.sampler = sampler;
+        imageInfo.imageView = imageView;
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descriptorSet;
+        write.dstBinding = 0;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo = &imageInfo;
+        vkUpdateDescriptorSets(g_rendererState.device, 1, &write, 0, nullptr);
+        return true;
+    }
+
+    bool CreateNullTexture() {
+        if (!CreateImage(g_rendererState.nullTextureImage, g_rendererState.nullTextureMemory,
+                         1, 1, VK_FORMAT_R8G8B8A8_UNORM,
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) {
+            return false;
+        }
+
+        VkBuffer stagingBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+        const std::array<unsigned char, 4> whitePixel = {255, 255, 255, 255};
+        if (!AllocateBuffer(stagingBuffer, stagingMemory, whitePixel.size(),
+                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            return false;
+        }
+
+        void* mappedMemory = nullptr;
+        if (vkMapMemory(g_rendererState.device, stagingMemory, 0, whitePixel.size(), 0, &mappedMemory) != VK_SUCCESS) {
+            DestroyBuffer(stagingBuffer, stagingMemory);
+            return false;
+        }
+
+        std::memcpy(mappedMemory, whitePixel.data(), whitePixel.size());
+        vkUnmapMemory(g_rendererState.device, stagingMemory);
+
+        const bool uploaded = TransitionImageLayout(g_rendererState.nullTextureImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) &&
+                              CopyBufferToImage(stagingBuffer, g_rendererState.nullTextureImage, 1, 1) &&
+                              TransitionImageLayout(g_rendererState.nullTextureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        DestroyBuffer(stagingBuffer, stagingMemory);
+        if (!uploaded) {
+            return false;
+        }
+
+        return CreateImageView(g_rendererState.nullTextureView, g_rendererState.nullTextureImage, VK_FORMAT_R8G8B8A8_UNORM);
+    }
+
      void DestroyPipelineObjects() {
         DestroyBuffer(g_rendererState.vertexBuffer, g_rendererState.vertexBufferMemory);
         DestroyBuffer(g_rendererState.indexBuffer, g_rendererState.indexBufferMemory);
@@ -175,9 +396,19 @@ namespace {
             return;
         }
 
-        if (g_rendererState.fontSampler != VK_NULL_HANDLE) {
-            vkDestroySampler(g_rendererState.device, g_rendererState.fontSampler, nullptr);
-            g_rendererState.fontSampler = VK_NULL_HANDLE;
+        if (g_rendererState.msdfFontSampler != VK_NULL_HANDLE) {
+            vkDestroySampler(g_rendererState.device, g_rendererState.msdfFontSampler, nullptr);
+            g_rendererState.msdfFontSampler = VK_NULL_HANDLE;
+        }
+
+        if (g_rendererState.grayscaleFontSampler != VK_NULL_HANDLE) {
+            vkDestroySampler(g_rendererState.device, g_rendererState.grayscaleFontSampler, nullptr);
+            g_rendererState.grayscaleFontSampler = VK_NULL_HANDLE;
+        }
+
+        if (g_rendererState.uiSampler != VK_NULL_HANDLE) {
+            vkDestroySampler(g_rendererState.device, g_rendererState.uiSampler, nullptr);
+            g_rendererState.uiSampler = VK_NULL_HANDLE;
         }
 
         if (g_rendererState.descriptorPool != VK_NULL_HANDLE) {
@@ -185,14 +416,39 @@ namespace {
             g_rendererState.descriptorPool = VK_NULL_HANDLE;
         }
 
+        if (g_rendererState.nullTextureView != VK_NULL_HANDLE) {
+            vkDestroyImageView(g_rendererState.device, g_rendererState.nullTextureView, nullptr);
+            g_rendererState.nullTextureView = VK_NULL_HANDLE;
+        }
+
+        if (g_rendererState.nullTextureImage != VK_NULL_HANDLE) {
+            vkDestroyImage(g_rendererState.device, g_rendererState.nullTextureImage, nullptr);
+            g_rendererState.nullTextureImage = VK_NULL_HANDLE;
+        }
+
+        if (g_rendererState.nullTextureMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(g_rendererState.device, g_rendererState.nullTextureMemory, nullptr);
+            g_rendererState.nullTextureMemory = VK_NULL_HANDLE;
+        }
+
         if (g_rendererState.descriptorSetLayout != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(g_rendererState.device, g_rendererState.descriptorSetLayout, nullptr);
             g_rendererState.descriptorSetLayout = VK_NULL_HANDLE;
         }
 
-        if (g_rendererState.pipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(g_rendererState.device, g_rendererState.pipeline, nullptr);
-            g_rendererState.pipeline = VK_NULL_HANDLE;
+        if (g_rendererState.uiPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(g_rendererState.device, g_rendererState.uiPipeline, nullptr);
+            g_rendererState.uiPipeline = VK_NULL_HANDLE;
+        }
+
+        if (g_rendererState.msdfPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(g_rendererState.device, g_rendererState.msdfPipeline, nullptr);
+            g_rendererState.msdfPipeline = VK_NULL_HANDLE;
+        }
+
+        if (g_rendererState.grayscalePipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(g_rendererState.device, g_rendererState.grayscalePipeline, nullptr);
+            g_rendererState.grayscalePipeline = VK_NULL_HANDLE;
         }
 
         if (g_rendererState.pipelineLayout != VK_NULL_HANDLE) {
@@ -204,19 +460,29 @@ namespace {
     bool CreatePipelineObjects() {
         const std::string shaderDir = SPHERICAL_SHADER_DIR;
         const std::vector<char> vertShaderCode = ReadBinaryFile(shaderDir + "/ui_nuklear.vert.spv");
-        const std::vector<char> fragShaderCode = ReadBinaryFile(shaderDir + "/ui_nuklear.frag.spv");
-        if (vertShaderCode.empty() || fragShaderCode.empty()) {
+        const std::vector<char> uiFragShaderCode = ReadBinaryFile(shaderDir + "/ui_nuklear_ui.frag.spv");
+        const std::vector<char> msdfFragShaderCode = ReadBinaryFile(shaderDir + "/ui_nuklear_msdf.frag.spv");
+        const std::vector<char> grayscaleFragShaderCode = ReadBinaryFile(shaderDir + "/ui_nuklear_grayscale.frag.spv");
+        if (vertShaderCode.empty() || uiFragShaderCode.empty() || msdfFragShaderCode.empty() || grayscaleFragShaderCode.empty()) {
             return false;
         }
 
         VkShaderModule vertModule = CreateShaderModule(g_rendererState.device, vertShaderCode);
-        VkShaderModule fragModule = CreateShaderModule(g_rendererState.device, fragShaderCode);
-        if (vertModule == VK_NULL_HANDLE || fragModule == VK_NULL_HANDLE) {
+        VkShaderModule uiFragModule = CreateShaderModule(g_rendererState.device, uiFragShaderCode);
+        VkShaderModule msdfFragModule = CreateShaderModule(g_rendererState.device, msdfFragShaderCode);
+        VkShaderModule grayscaleFragModule = CreateShaderModule(g_rendererState.device, grayscaleFragShaderCode);
+        if (vertModule == VK_NULL_HANDLE || uiFragModule == VK_NULL_HANDLE || msdfFragModule == VK_NULL_HANDLE || grayscaleFragModule == VK_NULL_HANDLE) {
             if (vertModule != VK_NULL_HANDLE) {
                 vkDestroyShaderModule(g_rendererState.device, vertModule, nullptr);
             }
-            if (fragModule != VK_NULL_HANDLE) {
-                vkDestroyShaderModule(g_rendererState.device, fragModule, nullptr);
+            if (uiFragModule != VK_NULL_HANDLE) {
+                vkDestroyShaderModule(g_rendererState.device, uiFragModule, nullptr);
+            }
+            if (msdfFragModule != VK_NULL_HANDLE) {
+                vkDestroyShaderModule(g_rendererState.device, msdfFragModule, nullptr);
+            }
+            if (grayscaleFragModule != VK_NULL_HANDLE) {
+                vkDestroyShaderModule(g_rendererState.device, grayscaleFragModule, nullptr);
             }
             return false;
         }
@@ -237,23 +503,11 @@ namespace {
         
         if (vkCreatePipelineLayout(g_rendererState.device, &layoutInfo, nullptr, &g_rendererState.pipelineLayout) != VK_SUCCESS) {
             vkDestroyShaderModule(g_rendererState.device, vertModule, nullptr);
-            vkDestroyShaderModule(g_rendererState.device, fragModule, nullptr);
+            vkDestroyShaderModule(g_rendererState.device, uiFragModule, nullptr);
+            vkDestroyShaderModule(g_rendererState.device, msdfFragModule, nullptr);
+            vkDestroyShaderModule(g_rendererState.device, grayscaleFragModule, nullptr);
             return false;
         }
-
-        VkPipelineShaderStageCreateInfo vertStage{};
-        vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-        vertStage.module = vertModule;
-        vertStage.pName = "main";
-
-        VkPipelineShaderStageCreateInfo fragStage{};
-        fragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        fragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        fragStage.module = fragModule;
-        fragStage.pName = "main";
-
-        const std::array<VkPipelineShaderStageCreateInfo, 2> stages = {vertStage, fragStage};
 
         // Vertex input layout for SphericalNkVertex:
         // - Location 0: position (vec2, R32G32_SFLOAT at offset 0)
@@ -333,8 +587,6 @@ namespace {
         VkGraphicsPipelineCreateInfo pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
         pipelineInfo.pNext = &renderingInfo;
-        pipelineInfo.stageCount = static_cast<uint32_t>(stages.size());
-        pipelineInfo.pStages = stages.data();
         pipelineInfo.pVertexInputState = &vertexInput;
         pipelineInfo.pInputAssemblyState = &inputAssembly;
         pipelineInfo.pViewportState = &viewportState;
@@ -346,24 +598,71 @@ namespace {
         pipelineInfo.renderPass = VK_NULL_HANDLE;
         pipelineInfo.subpass = 0;
 
-        const VkResult pipelineResult = vkCreateGraphicsPipelines(
-            g_rendererState.device,
-            VK_NULL_HANDLE,
-            1,
-            &pipelineInfo,
-            nullptr,
-            &g_rendererState.pipeline
-        );
+        auto createPipeline = [&](VkShaderModule fragmentModule, VkPipeline& pipelineOut) -> bool {
+            VkPipelineShaderStageCreateInfo vertStage{};
+            vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+            vertStage.module = vertModule;
+            vertStage.pName = "main";
+
+            VkPipelineShaderStageCreateInfo fragStage{};
+            fragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            fragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+            fragStage.module = fragmentModule;
+            fragStage.pName = "main";
+
+            const std::array<VkPipelineShaderStageCreateInfo, 2> stages = {vertStage, fragStage};
+            pipelineInfo.stageCount = static_cast<uint32_t>(stages.size());
+            pipelineInfo.pStages = stages.data();
+
+            return vkCreateGraphicsPipelines(
+                g_rendererState.device,
+                VK_NULL_HANDLE,
+                1,
+                &pipelineInfo,
+                nullptr,
+                &pipelineOut) == VK_SUCCESS;
+        };
+
+        const bool uiOk = createPipeline(uiFragModule, g_rendererState.uiPipeline);
+        const bool msdfOk = createPipeline(msdfFragModule, g_rendererState.msdfPipeline);
+        const bool grayscaleOk = createPipeline(grayscaleFragModule, g_rendererState.grayscalePipeline);
 
         vkDestroyShaderModule(g_rendererState.device, vertModule, nullptr);
-        vkDestroyShaderModule(g_rendererState.device, fragModule, nullptr);
+        vkDestroyShaderModule(g_rendererState.device, uiFragModule, nullptr);
+        vkDestroyShaderModule(g_rendererState.device, msdfFragModule, nullptr);
+        vkDestroyShaderModule(g_rendererState.device, grayscaleFragModule, nullptr);
 
-        if (pipelineResult != VK_SUCCESS) {
+        if (!uiOk || !msdfOk || !grayscaleOk) {
             DestroyPipelineObjects();
             return false;
         }
 
         return true;
+    }
+
+    bool IsFontTexture(nk_handle texture) {
+        return texture.ptr != nullptr && texture.ptr == g_rendererState.fontAtlasView;
+    }
+
+    VkPipeline GetPipelineForTexture(nk_handle texture) {
+        if (!IsFontTexture(texture)) {
+            return g_rendererState.uiPipeline;
+        }
+
+        if (Spherical::FontRenderer::GetRenderMode() == Spherical::FontRenderMode::Grayscale &&
+            g_rendererState.grayscalePipeline != VK_NULL_HANDLE) {
+            return g_rendererState.grayscalePipeline;
+        }
+        if (Spherical::FontRenderer::GetRenderMode() == Spherical::FontRenderMode::MSDF &&
+            g_rendererState.msdfPipeline != VK_NULL_HANDLE) {
+            return g_rendererState.msdfPipeline;
+        }
+        return g_rendererState.msdfPipeline;
+    }
+
+    VkDescriptorSet GetDescriptorSetForTexture(nk_handle texture) {
+        return IsFontTexture(texture) ? g_rendererState.fontDescriptorSet : g_rendererState.nullDescriptorSet;
     }
 }
 
@@ -435,13 +734,13 @@ namespace VulkanRenderer {
         // Create descriptor pool
         VkDescriptorPoolSize poolSize{};
         poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSize.descriptorCount = 1;
+        poolSize.descriptorCount = 2;
 
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.poolSizeCount = 1;
         poolInfo.pPoolSizes = &poolSize;
-        poolInfo.maxSets = 1;
+        poolInfo.maxSets = 2;
 
         if (vkCreateDescriptorPool(g_rendererState.device, &poolInfo, nullptr, 
                                    &g_rendererState.descriptorPool) != VK_SUCCESS) {
@@ -449,34 +748,68 @@ namespace VulkanRenderer {
             return false;
         }
 
-        // Allocate descriptor set
+        // Allocate descriptor sets for font atlas + null texture.
         VkDescriptorSetAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         allocInfo.descriptorPool = g_rendererState.descriptorPool;
-        allocInfo.descriptorSetCount = 1;
-        allocInfo.pSetLayouts = &g_rendererState.descriptorSetLayout;
+        const std::array<VkDescriptorSetLayout, 2> setLayouts = {
+            g_rendererState.descriptorSetLayout,
+            g_rendererState.descriptorSetLayout
+        };
+        allocInfo.descriptorSetCount = static_cast<uint32_t>(setLayouts.size());
+        allocInfo.pSetLayouts = setLayouts.data();
 
-        if (vkAllocateDescriptorSets(g_rendererState.device, &allocInfo, 
-                                    &g_rendererState.descriptorSet) != VK_SUCCESS) {
+        std::array<VkDescriptorSet, 2> descriptorSets = {};
+        if (vkAllocateDescriptorSets(g_rendererState.device, &allocInfo,
+                                     descriptorSets.data()) != VK_SUCCESS) {
+            Shutdown();
+            return false;
+        }
+        g_rendererState.fontDescriptorSet = descriptorSets[0];
+        g_rendererState.nullDescriptorSet = descriptorSets[1];
+
+        // Create samplers for font texture.
+        VkSamplerCreateInfo msdfSamplerInfo{};
+        msdfSamplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        msdfSamplerInfo.magFilter = VK_FILTER_LINEAR;
+        msdfSamplerInfo.minFilter = VK_FILTER_LINEAR;
+        msdfSamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        msdfSamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        msdfSamplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        msdfSamplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+        msdfSamplerInfo.unnormalizedCoordinates = VK_FALSE;
+        msdfSamplerInfo.compareEnable = VK_FALSE;
+        msdfSamplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+
+        if (vkCreateSampler(g_rendererState.device, &msdfSamplerInfo, nullptr,
+                           &g_rendererState.msdfFontSampler) != VK_SUCCESS) {
             Shutdown();
             return false;
         }
 
-        // Create sampler for font texture
-        VkSamplerCreateInfo samplerInfo{};
-        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        samplerInfo.magFilter = VK_FILTER_LINEAR;
-        samplerInfo.minFilter = VK_FILTER_LINEAR;
-        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
-        samplerInfo.unnormalizedCoordinates = VK_FALSE;
-        samplerInfo.compareEnable = VK_FALSE;
-        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        VkSamplerCreateInfo grayscaleSamplerInfo = msdfSamplerInfo;
+        grayscaleSamplerInfo.magFilter = VK_FILTER_NEAREST;
+        grayscaleSamplerInfo.minFilter = VK_FILTER_NEAREST;
 
-        if (vkCreateSampler(g_rendererState.device, &samplerInfo, nullptr, 
-                           &g_rendererState.fontSampler) != VK_SUCCESS) {
+        if (vkCreateSampler(g_rendererState.device, &grayscaleSamplerInfo, nullptr,
+                           &g_rendererState.grayscaleFontSampler) != VK_SUCCESS) {
+            Shutdown();
+            return false;
+        }
+
+        VkSamplerCreateInfo uiSamplerInfo = msdfSamplerInfo;
+        if (vkCreateSampler(g_rendererState.device, &uiSamplerInfo, nullptr,
+                           &g_rendererState.uiSampler) != VK_SUCCESS) {
+            Shutdown();
+            return false;
+        }
+
+        if (!CreateNullTexture()) {
+            Shutdown();
+            return false;
+        }
+
+        if (!UpdateDescriptorSet(g_rendererState.nullDescriptorSet, g_rendererState.uiSampler, g_rendererState.nullTextureView)) {
             Shutdown();
             return false;
         }
@@ -523,7 +856,8 @@ namespace VulkanRenderer {
         renderingInfo.pColorAttachments = &colorAttachmentInfo;
 
         vkCmdBeginRendering(cmd, &renderingInfo);
-        if (g_rendererState.pipeline != VK_NULL_HANDLE) {
+        const VkPipeline activePipeline = g_rendererState.uiPipeline;
+        if (activePipeline != VK_NULL_HANDLE) {
             VkViewport viewport{};
             viewport.x = 0.0f;
             viewport.y = 0.0f;
@@ -538,7 +872,7 @@ namespace VulkanRenderer {
 
             vkCmdSetViewport(cmd, 0, 1, &viewport);
             vkCmdSetScissor(cmd, 0, 1, &scissor);
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_rendererState.pipeline);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
             
             VkDeviceSize offset = 0;
             vkCmdBindVertexBuffers(cmd, 0, 1, &g_rendererState.vertexBuffer, &offset);
@@ -597,34 +931,25 @@ namespace VulkanRenderer {
     }
 
     void UpdateFontTexture(VkImageView atlasView) {
-        if (g_rendererState.descriptorSet == VK_NULL_HANDLE || atlasView == VK_NULL_HANDLE) {
+        if (g_rendererState.fontDescriptorSet == VK_NULL_HANDLE || atlasView == VK_NULL_HANDLE) {
             return;
         }
 
         g_rendererState.fontAtlasView = atlasView;
 
-        // Write descriptor set with font atlas sampler
-        VkDescriptorImageInfo imageInfo{};
-        imageInfo.sampler = g_rendererState.fontSampler;
-        imageInfo.imageView = atlasView;
-        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkSampler selectedSampler = g_rendererState.msdfFontSampler;
+        if (Spherical::FontRenderer::GetRenderMode() == Spherical::FontRenderMode::Grayscale &&
+            g_rendererState.grayscaleFontSampler != VK_NULL_HANDLE) {
+            selectedSampler = g_rendererState.grayscaleFontSampler;
+        } else if (g_rendererState.msdfFontSampler != VK_NULL_HANDLE) {
+            selectedSampler = g_rendererState.msdfFontSampler;
+        }
 
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = g_rendererState.descriptorSet;
-        write.dstBinding = 0;
-        write.dstArrayElement = 0;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.descriptorCount = 1;
-        write.pImageInfo = &imageInfo;
-
-        vkUpdateDescriptorSets(g_rendererState.device, 1, &write, 0, nullptr);
+        UpdateDescriptorSet(g_rendererState.fontDescriptorSet, selectedSampler, atlasView);
     }
 
     nk_handle GetNullTexture() {
-        // Returns a simple handle; in this implementation, we don't actually use a null texture
-        // Instead, Nuklear can use any valid texture. Return the font atlas handle.
-        return nk_handle_ptr(g_rendererState.fontAtlasView);
+        return nk_handle_ptr(g_rendererState.nullTextureView);
     }
 
     bool MapVertexBuffer(void** outPtr, size_t* outCapacity) {
@@ -723,12 +1048,7 @@ namespace VulkanRenderer {
         scissor.extent = g_rendererState.framebufferExtent;
         vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-        // Bind the UI pipeline and descriptor set
-        if (g_rendererState.pipeline != VK_NULL_HANDLE) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_rendererState.pipeline);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_rendererState.pipelineLayout,
-                                   0, 1, &g_rendererState.descriptorSet, 0, nullptr);
-
+        if (g_rendererState.pipelineLayout != VK_NULL_HANDLE) {
             // Push orthographic projection matrix
             if (proj != nullptr) {
                 vkCmdPushConstants(cmd, g_rendererState.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
@@ -742,11 +1062,21 @@ namespace VulkanRenderer {
         }
     }
 
-    void DrawUICommand(VkCommandBuffer cmd, uint32_t elemCount, uint32_t indexOffset,
+    void DrawUICommand(VkCommandBuffer cmd, nk_handle texture, uint32_t elemCount, uint32_t indexOffset,
                       int scissorX, int scissorY, int scissorW, int scissorH) {
         if (!g_rendererState.initialized || cmd == VK_NULL_HANDLE || elemCount == 0) {
             return;
         }
+
+        const VkPipeline pipeline = GetPipelineForTexture(texture);
+        const VkDescriptorSet descriptorSet = GetDescriptorSetForTexture(texture);
+        if (pipeline == VK_NULL_HANDLE || descriptorSet == VK_NULL_HANDLE || g_rendererState.pipelineLayout == VK_NULL_HANDLE) {
+            return;
+        }
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_rendererState.pipelineLayout,
+                               0, 1, &descriptorSet, 0, nullptr);
 
         // Set scissor rectangle for this command
         VkRect2D scissor{};

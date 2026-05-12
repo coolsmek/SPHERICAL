@@ -13,12 +13,21 @@
 namespace Spherical {
 
     /**
+     * @enum FontRenderMode
+     * @brief Defines the glyph rasterization strategy used by the SDK font system.
+     */
+    enum class FontRenderMode {
+        Grayscale, ///< Hinted grayscale rendering for sharp small UI text.
+        MSDF       ///< Multi-channel Signed Distance Field rendering for sharper corners across scales.
+    };
+
+    /**
      * @enum FontStyle
      * @brief Defines standard UI font styles for text rendering.
      */
     enum class FontStyle {
-        Regular, ///< Default body text
-        Title    ///< Larger text for titles and headers
+        Regular, ///< Default body text (Grayscale: FT_LOAD_TARGET_NORMAL, MSDF: no hinting)
+        Title    ///< Larger text for titles and headers (Grayscale: FT_LOAD_TARGET_LIGHT, MSDF: no hinting)
     };
 
     /**

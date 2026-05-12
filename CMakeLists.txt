@@ -3,10 +3,13 @@ find_package(SDL3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(Freetype REQUIRED)
+find_package(msdfgen CONFIG REQUIRED)
 
 set(SPHERICAL_SHADER_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ui_nuklear.vert
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ui_nuklear.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ui_nuklear_ui.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ui_nuklear_grayscale.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ui_nuklear_msdf.frag
 )
 
 set(SPHERICAL_SHADER_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
@@ -64,4 +67,6 @@ target_link_libraries(Spherical PUBLIC
         glm::glm
         Vulkan::Vulkan
         Freetype::Freetype
+        msdfgen::msdfgen
+        msdfgen::msdfgen-ext
 )

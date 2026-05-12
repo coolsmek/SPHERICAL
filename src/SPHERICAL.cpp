@@ -73,6 +73,7 @@ namespace {
     };
     
     BackendState g_backend;
+    bool g_textInputWasActive = false;
 
     // UI registration and implementation
     Spherical::UIBuildFn g_uiBuildCallback = nullptr;
@@ -84,6 +85,45 @@ namespace {
 
         const float scale = SDL_GetWindowDisplayScale(window);
         return scale > 0.0f ? scale : 1.0f;
+    }
+
+    float ResolveUiScale(const Spherical::SphericalInitInfo& info, SDL_Window* window) {
+        if (info.manualDpiScale > 0.0f) {
+            return info.manualDpiScale;
+        }
+        return GetWindowDisplayScale(window);
+    }
+
+    bool IsNuklearTextEditActive(const nk_context* context) {
+        if (context == nullptr || context->active == nullptr) {
+            return false;
+        }
+
+        if (context->active->popup.win != nullptr) {
+            return context->active->popup.win->edit.active != 0;
+        }
+
+        return context->active->edit.active != 0;
+    }
+
+    void SyncWindowTextInputState(const nk_context* context) {
+        if (g_backend.window == nullptr || context == nullptr) {
+            return;
+        }
+
+        const bool editActive = IsNuklearTextEditActive(context);
+        if (editActive == g_textInputWasActive) {
+            return;
+        }
+
+        const bool windowTextInputActive = SDL_TextInputActive(g_backend.window);
+        if (editActive && !windowTextInputActive) {
+            SDL_StartTextInput(g_backend.window);
+        } else if (!editActive && windowTextInputActive) {
+            SDL_StopTextInput(g_backend.window);
+        }
+
+        g_textInputWasActive = editActive;
     }
 
     ScrollbarDragState g_scrollbarDrag;
@@ -113,19 +153,6 @@ namespace {
                my >= rect.y && my <= (rect.y + rect.h);
     }
     
-    static void DebugDragTrace(float mouseY, float thumbTopY) {
-        std::ostringstream line;
-        line << "[SCROLL-DRAG] mouseY=" << mouseY << " thumbTopY=" << thumbTopY << '\n';
-
-        // Works when app is launched from a terminal.
-        std::cout << line.str();
-
-#ifdef _WIN32
-        // Works when no console is attached (view in debugger output / DebugView).
-        OutputDebugStringA(line.str().c_str());
-#endif
-    }
-
     class UIPainterImpl : public Spherical::UIPainter {
     private:
         nk_context* m_ctx = nullptr;
@@ -281,7 +308,6 @@ namespace {
             float desiredThumbY = m_ctx->input.mouse.pos.y - g_scrollbarDrag.grabOffsetY;
             desiredThumbY = std::clamp(desiredThumbY, g_scrollbarDrag.trackY, g_scrollbarDrag.trackY + dragTravel);
 
-            DebugDragTrace(m_ctx->input.mouse.pos.y, desiredThumbY);
 
             const float normalizedThumb = (desiredThumbY - g_scrollbarDrag.trackY) / dragTravel;
             const float desiredScrollY = std::clamp(normalizedThumb * g_scrollbarDrag.maxScrollY, 0.0f, g_scrollbarDrag.maxScrollY);
@@ -1022,6 +1048,8 @@ namespace Spherical {
             g_uiBuildCallback(painter);
         }
 
+        SyncWindowTextInputState(&ctx);
+
         void* vertPtr = nullptr;
         void* indexPtr = nullptr;
         size_t vertCapacity = 0;
@@ -1053,7 +1081,7 @@ namespace Spherical {
 
         nk_draw_null_texture nullTexture{};
         nullTexture.texture = VulkanRenderer::GetNullTexture();
-        nullTexture.uv = nk_vec2(0.5f / 1024.0f, 0.5f / 512.0f);
+        nullTexture.uv = nk_vec2(0.5f, 0.5f);
 
         nk_convert_config config{};
         config.global_alpha = 1.0f;
@@ -1108,7 +1136,7 @@ namespace Spherical {
             scissorH = std::min(scissorH, static_cast<int>(height) - scissorY);
 
             if (scissorW > 0 && scissorH > 0) {
-                VulkanRenderer::DrawUICommand(cmd, drawCmd->elem_count, indexOffset,
+                VulkanRenderer::DrawUICommand(cmd, drawCmd->texture, drawCmd->elem_count, indexOffset,
                                               scissorX, scissorY, scissorW, scissorH);
             }
 
@@ -1149,10 +1177,10 @@ namespace Spherical {
         } 
 
         const char* fontPath = resolvedFontPath.empty() ? nullptr : resolvedFontPath.c_str();
-        const float uiScale = GetWindowDisplayScale(g_backend.window);
+        const float uiScale = ResolveUiScale(info, g_backend.window);
         if (!FontRenderer::Init(g_backend.device, g_backend.physicalDevice,
                                 g_backend.graphicsQueue, g_backend.commandPool,
-                                fontPath, uiScale)) {
+                                fontPath, uiScale, info.fontRenderMode)) {
             VulkanRenderer::Shutdown();
             ShutdownBackend();
             return false;
@@ -1182,6 +1210,10 @@ namespace Spherical {
         }
 
         nk_init_fixed(&ctx, nk_buffer_storage.data(), nk_buffer_storage.size(), fontToUse);
+        if (g_backend.window != nullptr && SDL_TextInputActive(g_backend.window)) {
+            SDL_StopTextInput(g_backend.window);
+        }
+        g_textInputWasActive = false;
         UIState::lastFrameTime = std::chrono::high_resolution_clock::now();
 
         TaskRunner::Init();
@@ -1274,7 +1306,8 @@ namespace Spherical {
                 }
                 case SDL_EVENT_TEXT_INPUT: {
                     nk_glyph glyph;
-                    std::memcpy(glyph, event.text.text, NK_UTF_SIZE);
+                    std::memset(glyph, 0, sizeof(glyph));
+                    std::strncpy(reinterpret_cast<char*>(glyph), event.text.text, NK_UTF_SIZE - 1);
                     nk_input_glyph(&ctx, glyph);
                     break;
                 }
@@ -1347,6 +1380,10 @@ namespace Spherical {
         }
 
         TaskRunner::Shutdown();
+        if (g_backend.window != nullptr && SDL_TextInputActive(g_backend.window)) {
+            SDL_StopTextInput(g_backend.window);
+        }
+        g_textInputWasActive = false;
         FontRenderer::Shutdown();
         VulkanRenderer::Shutdown();
         ShutdownBackend();
