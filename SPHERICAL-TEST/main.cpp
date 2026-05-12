@@ -23,6 +23,17 @@ namespace {
         float colorR = 0.5f;
         float colorG = 0.5f;
         float colorB = 0.5f;
+        float buttonHeight = 30.0f;
+        float buttonWidth = 200.0f;
+        float buttonCornerRadius = 0.0f;
+        float buttonBorderThickness = 1.0f;
+        Spherical::UIColor buttonBackgroundColor{0.92f, 0.92f, 0.92f, 1.0f};
+        Spherical::UIColor buttonHoverBackgroundColor{0.82f, 0.82f, 0.82f, 1.0f};
+        Spherical::UIColor buttonClickedBackgroundColor{0.72f, 0.72f, 0.72f, 1.0f};
+        Spherical::UIVec2 buttonPadding{12.0f, 7.0f};
+        Spherical::UIColor buttonHighlightColor{1.0f, 1.0f, 1.0f, 1.0f};
+        Spherical::UIColor buttonShadowColor{0.35f, 0.35f, 0.35f, 1.0f};
+        int buttonStyleMode = static_cast<int>(Spherical::ButtonStyle::Embossed);
         int clickCounter = 0;
         char textInput[128] = "";
         bool isLoadingProject = false;
@@ -63,6 +74,23 @@ namespace {
 
     AppUIState g_appUI;
 
+    void EditColorRgb(Spherical::UIPainter& ui, const char* title, Spherical::UIColor& color) {
+        ui.label(title);
+        ui.slider_float("R:", &color.r, 0.0f, 1.0f, 0.01f);
+        ui.slider_float("G:", &color.g, 0.0f, 1.0f, 0.01f);
+        ui.slider_float("B:", &color.b, 0.0f, 1.0f, 0.01f);
+
+        char colorLabel[96];
+        snprintf(colorLabel, sizeof(colorLabel), "RGB: (%.2f, %.2f, %.2f)", color.r, color.g, color.b);
+        ui.label(colorLabel);
+    }
+
+    Spherical::ButtonStyle GetSelectedButtonStyle() {
+        return g_appUI.buttonStyleMode == static_cast<int>(Spherical::ButtonStyle::Embossed)
+            ? Spherical::ButtonStyle::Embossed
+            : Spherical::ButtonStyle::Flat;
+    }
+
     std::string ResolveAppFontPath() {
         std::vector<std::string> fontCandidates = {
             "SPHERICAL-TEST/fonts/Arimo/Arimo-Regular.ttf",
@@ -91,7 +119,8 @@ namespace {
                     basePath + "../fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf",
                     basePath + "../../../SPHERICAL-TEST/fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf"
                 });
-            }*/
+            }
+            */
 
         for (const std::string& candidate : fontCandidates) {
             std::ifstream file(candidate.c_str(), std::ios::binary);
@@ -130,7 +159,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     SDL_Window* window = SDL_CreateWindow(
         "SPHERICAL Control Panel",
         1280,
-        720,
+        1300,
         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE
     );
 
@@ -144,12 +173,30 @@ int main(int /*argc*/, char* /*argv*/[]) {
     // Register the UI build callback BEFORE initialization
     Spherical::RegisterUI([](Spherical::UIPainter& ui) {
         
-        if (ui.begin_panel("Title", 500, 20, 300, 400)) {
-                ui.label("Content");
-            }
-            ui.end_panel();  // Always call this
-        
-        if (ui.begin_panel("Control Panel", 20, 20, 450, 600)) {
+        ui.push_panel_body_color({1.0f, 1.0f, 1.0f, 1.0f});
+        ui.push_panel_title_bar_color({0.45f, 0.45f, 0.45f, 1.0f});
+        ui.push_panel_border_color({0.0f, 0.0f, 0.0f, 1.0f});
+        ui.push_panel_title_text_color({1.0f, 1.0f, 1.0f, 1.0f});
+        ui.push_text_color({0.05f, 0.05f, 0.05f, 1.0f});
+        ui.push_radio_button_text_color({0.05f, 0.05f, 0.05f, 1.0f});
+        ui.push_button_background_color(g_appUI.buttonBackgroundColor);
+        ui.push_button_hover_background_color(g_appUI.buttonHoverBackgroundColor);
+        ui.push_button_clicked_background_color(g_appUI.buttonClickedBackgroundColor);
+        ui.push_button_height(g_appUI.buttonHeight);
+        ui.push_button_width(g_appUI.buttonWidth);
+        ui.push_button_corner_radius(g_appUI.buttonCornerRadius);
+        ui.push_button_border_thickness(g_appUI.buttonBorderThickness);
+        ui.push_button_padding(g_appUI.buttonPadding);
+        ui.push_button_style(GetSelectedButtonStyle());
+        ui.push_button_highlight_color(g_appUI.buttonHighlightColor);
+        ui.push_button_shadow_color(g_appUI.buttonShadowColor);
+        ui.push_button_border_color({0.0f, 0.0f, 0.0f, 1.0f});
+        ui.push_button_text_color({0.0f, 0.0f, 0.0f, 1.0f});
+        ui.push_text_input_background_color({1.0f, 1.0f, 1.0f, 1.0f});
+        ui.push_text_input_text_color({0.0f, 0.0f, 0.0f, 1.0f});
+                
+        // New Panel Start
+        if (ui.begin_panel("Control Panel", 20, 20, 650, 1250)) {
             
             ui.push_font(Spherical::FontStyle::Title);
             ui.label("SPHERICAL Interactive Control Panel");
@@ -223,6 +270,45 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
             ui.spacing();
 
+            ui.push_font(Spherical::FontStyle::Title);
+            ui.label("Button Theme Colors");
+            ui.pop_font();
+
+            ui.label("Button Style");
+            ui.radio_button("Flat", &g_appUI.buttonStyleMode, static_cast<int>(Spherical::ButtonStyle::Flat));
+            ui.radio_button("Embossed", &g_appUI.buttonStyleMode, static_cast<int>(Spherical::ButtonStyle::Embossed));
+            ui.spacing();
+
+            ui.slider_float("Button Height", &g_appUI.buttonHeight, 20.0f, 64.0f, 1.0f);
+            ui.slider_float("Button Width", &g_appUI.buttonWidth, 0.0f, 360.0f, 1.0f);
+            ui.slider_float("Corner Radius", &g_appUI.buttonCornerRadius, 0.0f, 16.0f, 0.5f);
+            ui.slider_float("Border Thickness", &g_appUI.buttonBorderThickness, 0.0f, 6.0f, 0.5f);
+            ui.slider_float("Padding X", &g_appUI.buttonPadding.x, 0.0f, 24.0f, 1.0f);
+            ui.slider_float("Padding Y", &g_appUI.buttonPadding.y, 0.0f, 24.0f, 1.0f);
+
+            {
+                char widthLabel[96];
+                if (g_appUI.buttonWidth <= 0.0f) {
+                    snprintf(widthLabel, sizeof(widthLabel), "Button Width: Full row width");
+                } else {
+                    snprintf(widthLabel, sizeof(widthLabel), "Button Width: %.0f px (centered)", g_appUI.buttonWidth);
+                }
+                ui.label(widthLabel);
+            }
+            ui.spacing();
+
+            EditColorRgb(ui, "Button Normal Background", g_appUI.buttonBackgroundColor);
+            ui.spacing();
+            EditColorRgb(ui, "Button Hover Background", g_appUI.buttonHoverBackgroundColor);
+            ui.spacing();
+            EditColorRgb(ui, "Button Clicked Background", g_appUI.buttonClickedBackgroundColor);
+            ui.spacing();
+            EditColorRgb(ui, "Button Bevel Highlight", g_appUI.buttonHighlightColor);
+            ui.spacing();
+            EditColorRgb(ui, "Button Bevel Shadow", g_appUI.buttonShadowColor);
+
+            ui.spacing();
+
             // Click counter button
             if (ui.button("Click Me")) {
                 g_appUI.clickCounter++;
@@ -273,6 +359,28 @@ int main(int /*argc*/, char* /*argv*/[]) {
                         
         }
         ui.end_panel();  // Always call end_panel() — required even if begin_panel() returned false
+        
+        ui.pop_text_input_text_color();
+        ui.pop_text_input_background_color();
+        ui.pop_button_text_color();
+        ui.pop_button_border_color();
+        ui.pop_button_shadow_color();
+        ui.pop_button_highlight_color();
+        ui.pop_button_style();
+        ui.pop_button_padding();
+        ui.pop_button_border_thickness();
+        ui.pop_button_corner_radius();
+        ui.pop_button_width();
+        ui.pop_button_height();
+        ui.pop_button_clicked_background_color();
+        ui.pop_button_hover_background_color();
+        ui.pop_button_background_color();
+        ui.pop_radio_button_text_color();
+        ui.pop_text_color();
+        ui.pop_panel_title_text_color();
+        ui.pop_panel_border_color();
+        ui.pop_panel_title_bar_color();
+        ui.pop_panel_body_color();
     });
 
     const std::string fontPath = ResolveAppFontPath();
