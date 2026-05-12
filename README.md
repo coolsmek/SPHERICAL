@@ -49,7 +49,7 @@ At its core, the project combines:
 - **Vulkan** for explicit GPU control and low-latency presentation
 - **SDL3** for windowing, platform integration, and input events
 - **Nuklear** for immediate-mode UI construction
-- **FreeType** for baked font atlas generation and text rendering
+- **FreeType + msdfgen** for baked grayscale and MSDF font atlases
 
 The current milestone is an interactive demo app that proves the end-to-end pipeline: window creation, Vulkan initialization, Nuklear UI generation, font atlas upload, command conversion, and on-screen rendering of an actual control panel.
 
@@ -98,7 +98,7 @@ In short: SPHERICAL is trying to be a foundation for **native-feeling, GPU-drive
 
 ### Longer-term goals
 
-- Upgrade bitmap text to **SDF / MSDF-quality** rendering
+- Continue refining **Grayscale / MSDF-quality** text rendering and DPI behavior
 - Improve high-DPI behavior and scaling quality
 - Expand the SDK from a working prototype into a more reusable editor/toolkit foundation
 
@@ -127,8 +127,10 @@ In short: SPHERICAL is trying to be a foundation for **native-feeling, GPU-drive
   - immediate-mode UI authoring
   - draw command generation
 - **FreeType**
-  - glyph rasterization
-  - atlas generation for UI text
+  - hinted grayscale glyph rasterization
+  - baseline font metrics / atlas generation for UI text
+- **msdfgen**
+  - multi-channel signed distance field generation for scalable text
 
 ### Additional libraries
 
@@ -352,5 +354,5 @@ cmake --build .\cmake-build-spherical_debug --config Debug --target SPHERICAL_Te
 ## Runtime Notes
 
 - The demo bundles its font assets into the runtime output folder.
-- The current text path uses a FreeType SDF atlas.
+- The current text path supports two baked atlas modes: **Grayscale** for hinted small UI text and **MSDF** for scalable distance-field text.
 - Explorer / double-click launch is supported by resolving font assets relative to the executable output.

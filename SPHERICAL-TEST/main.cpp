@@ -65,18 +65,33 @@ namespace {
 
     std::string ResolveAppFontPath() {
         std::vector<std::string> fontCandidates = {
-            "SPHERICAL-TEST/fonts/Arimo-Regular.ttf",
-            "fonts/Arimo-Regular.ttf"
+            "SPHERICAL-TEST/fonts/Arimo/Arimo-Regular.ttf",
+            "fonts/Arimo/Arimo-Regular.ttf"
         };
 
         if (const char* basePathRaw = SDL_GetBasePath()) {
             const std::string basePath(basePathRaw);
             fontCandidates.insert(fontCandidates.begin(), {
-                basePath + "fonts/Arimo-Regular.ttf",
-                basePath + "../fonts/Arimo-Regular.ttf",
-                basePath + "../../../SPHERICAL-TEST/fonts/Arimo-Regular.ttf"
+                basePath + "fonts/Arimo/Arimo-Regular.ttf",
+                basePath + "../fonts/Arimo/Arimo-Regular.ttf",
+                basePath + "../../../SPHERICAL-TEST/fonts/Arimo/Arimo-Regular.ttf"
             });
         }
+        /*
+        std::string ResolveAppFontPath() {
+            std::vector<std::string> fontCandidates = {
+                "SPHERICAL-TEST/fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf",
+                "fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf"
+            };
+
+            if (const char* basePathRaw = SDL_GetBasePath()) {
+                const std::string basePath(basePathRaw);
+                fontCandidates.insert(fontCandidates.begin(), {
+                    basePath + "fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf",
+                    basePath + "../fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf",
+                    basePath + "../../../SPHERICAL-TEST/fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf"
+                });
+            }*/
 
         for (const std::string& candidate : fontCandidates) {
             std::ifstream file(candidate.c_str(), std::ios::binary);
@@ -273,6 +288,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
     initInfo.preferImmediatePresent = false;
     initInfo.framesInFlight = 1;
     initInfo.enableValidation = false;
+    initInfo.fontRenderMode = Spherical::FontRenderMode::MSDF;
+    initInfo.manualDpiScale = 0.0f; 
 
     if (!Spherical::Init(initInfo)) {
         std::cerr << "Failed to initialize SPHERICAL SDK!" << std::endl;

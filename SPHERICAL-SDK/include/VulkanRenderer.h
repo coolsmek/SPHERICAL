@@ -26,7 +26,7 @@ namespace Spherical {
         void SetRenderTarget(VkImageView colorAttachmentView, VkExtent2D framebufferExtent);
 
         // --- Font texture ---
-        // Wire the baked atlas into the descriptor set once after Init.
+        // Wire the baked atlas into the renderer once after Init.
         void UpdateFontTexture(VkImageView atlasView);
 
         // --- Null texture handle (for Nuklear default) ---
@@ -42,7 +42,7 @@ namespace Spherical {
         // --- Per-frame draw API (called after nk_convert) ---
         // Pass the current swapchain image view so the attachment is correct.
         void BeginUIPass(VkCommandBuffer cmd, VkImageView colorView, const float proj[16]);
-        void DrawUICommand(VkCommandBuffer cmd, uint32_t elemCount, uint32_t indexOffset,
+        void DrawUICommand(VkCommandBuffer cmd, nk_handle texture, uint32_t elemCount, uint32_t indexOffset,
                            int scissorX, int scissorY, int scissorW, int scissorH);
         void EndUIPass(VkCommandBuffer cmd);
 

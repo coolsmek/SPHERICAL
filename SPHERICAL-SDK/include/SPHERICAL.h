@@ -21,6 +21,8 @@ namespace Spherical {
     struct SphericalInitInfo {
         SDL_Window* window = nullptr;            ///< SDL3 window handle for input and surface creation
         const char* fontPath = nullptr;          ///< Optional path to a TrueType/OpenType font file used for UI text
+        FontRenderMode fontRenderMode = FontRenderMode::MSDF; ///< MSDF by default for scalable text; Grayscale remains available for tiny hinted UI text
+        float manualDpiScale = 0.0f;            ///< Optional manual DPI/content scale override. <= 0 uses SDL_GetWindowDisplayScale(window)
         bool preferImmediatePresent = true;      ///< Try VK_PRESENT_MODE_IMMEDIATE_KHR first, fallback to FIFO
         uint32_t framesInFlight = 1;             ///< Reserved for future multi-frame sync (currently clamped to 1)
         bool enableValidation = false;           ///< Reserved for future validation-layers toggle

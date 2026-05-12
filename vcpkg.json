@@ -1,6 +1,6 @@
 {
   "name": "spherical",
-  "version-string": "0.1.13",
+  "version-string": "0.1.14",
   "dependencies": [
     {
       "name": "sdl3",
@@ -9,7 +9,12 @@
     "vulkan-headers",
     "vulkan-loader",
     "glm",
-    "freetype"
+    "freetype",
+    {
+      "name": "msdfgen",
+      "default-features": false,
+      "features": ["extensions"]
+    }
   ],
   "builtin-baseline": "b8922ae57c61d4192a504bbb955d19599fa68f2a" 
 }

@@ -10,7 +10,11 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 	endif()
 endif()
 
-project(SPHERICAL VERSION 0.1.13 LANGUAGES CXX)
+project(SPHERICAL VERSION 0.1.14 LANGUAGES CXX)
+# Set the global C++ standard
+set(CMAKE_CXX_STANDARD 23)           # Or 26 if you want to go bleeding edge
+set(CMAKE_CXX_STANDARD_REQUIRED ON)  # Error out if the compiler is too old
+set(CMAKE_CXX_EXTENSIONS OFF)        # Use "Pure" C++ without compiler-specific junk
 set (SPHERICAL_VERSION_SUFFIX "alpha")
 
 # Force CMake to find the 1.4 components

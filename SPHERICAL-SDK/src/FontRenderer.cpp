@@ -1,12 +1,16 @@
 ﻿#include "FontRenderer.h"
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include <msdfgen/msdfgen.h>
+#include <msdfgen/msdfgen-ext.h>
+#include <array>
 #include <vector>
 #include <cstring>
 #include <cstdio>
 #include <cmath>
 #include <algorithm>
 #include <functional>
+#include <string>
 
 // Include nuklear configuration and header
 #include "nuklear_config.h"
@@ -18,14 +22,42 @@ namespace {
     constexpr float kPointsPerInch = 72.0f;
     
     //Font sizes
-    constexpr float kRegularPointSize = 14.0f;
+    constexpr float kRegularPointSize = 12.0f;
     constexpr float kTitlePointSize = 16.0f;
     
     constexpr float kMinimumDpiScale = 1.0f;
     constexpr float kMaximumDpiScale = 4.0f;
     constexpr uint32_t kMinimumFontPixelSize = 8;
-    constexpr uint32_t kBaseAtlasWidth = 1024;
-    constexpr uint32_t kBaseAtlasHeight = 512;
+    constexpr uint32_t kBaseAtlasWidth = 2048;
+    constexpr uint32_t kBaseAtlasHeight = 1024;
+    constexpr uint32_t kMaxAtlasWidth = 4096;
+    constexpr uint32_t kMaxAtlasHeight = 4096;
+    constexpr uint32_t kGlyphPadding = 8;
+    constexpr double kMsdfPxRange = 4.0;
+    constexpr double kMsdfEdgeColoringAngle = 3.5;
+    constexpr double kMsdfBakeScale = 1.0;
+
+    const char* GetRenderModeName(Spherical::FontRenderMode renderMode) {
+        switch (renderMode) {
+            case Spherical::FontRenderMode::Grayscale:
+                return "Grayscale";
+            case Spherical::FontRenderMode::MSDF:
+                return "MSDF";
+        }
+        return "Unknown";
+    }
+
+    bool IsMsdfMode(Spherical::FontRenderMode renderMode) {
+        return renderMode == Spherical::FontRenderMode::MSDF;
+    }
+
+    uint32_t GetAtlasBytesPerPixel(Spherical::FontRenderMode renderMode) {
+        return IsMsdfMode(renderMode) ? 4u : 1u;
+    }
+
+    VkFormat GetAtlasFormat(Spherical::FontRenderMode renderMode) {
+        return IsMsdfMode(renderMode) ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8_UNORM;
+    }
 
     float SanitizeDpiScale(float dpiScale) {
         if (dpiScale <= 0.0f) {
@@ -64,14 +96,79 @@ namespace {
         return NextPowerOfTwo(static_cast<uint32_t>(std::ceil(scaledDimension)));
     }
 
-    // Per-glyph metrics stored after baking
+    FT_Int32 GetHintingTarget(Spherical::FontStyle style) {
+        switch (style) {
+            case Spherical::FontStyle::Regular:
+                return FT_LOAD_TARGET_NORMAL;
+            case Spherical::FontStyle::Title:
+                return FT_LOAD_TARGET_LIGHT;
+        }
+        return FT_LOAD_TARGET_NORMAL;
+    }
+
+    bool FileExists(const char* path) {
+        if (path == nullptr || path[0] == '\0') {
+            return false;
+        }
+
+        std::FILE* file = nullptr;
+#ifdef _WIN32
+        fopen_s(&file, path, "rb");
+#else
+        file = std::fopen(path, "rb");
+#endif
+        if (file == nullptr) {
+            return false;
+        }
+
+        std::fclose(file);
+        return true;
+    }
+
+    std::string ResolveDefaultFontPath(Spherical::FontRenderMode renderMode) {
+#ifdef _WIN32
+        if (renderMode == Spherical::FontRenderMode::Grayscale) {
+            constexpr const char* grayscaleCandidates[] = {
+                "C:\\Windows\\Fonts\\tahoma.ttf",
+                "C:\\Windows\\Fonts\\segoeui.ttf",
+                "C:\\Windows\\Fonts\\arial.ttf"
+            };
+
+            for (const char* candidate : grayscaleCandidates) {
+                if (FileExists(candidate)) {
+                    return candidate;
+                }
+            }
+        }
+
+        constexpr const char* defaultCandidates[] = {
+            "C:\\Windows\\Fonts\\arial.ttf",
+            "C:\\Windows\\Fonts\\segoeui.ttf",
+            "C:\\Windows\\Fonts\\tahoma.ttf"
+        };
+
+        for (const char* candidate : defaultCandidates) {
+            if (FileExists(candidate)) {
+                return candidate;
+            }
+        }
+#endif
+        return {};
+    }
+
+    // Per-glyph metrics stored after baking.
     struct GlyphInfo {
         float u0, v0, u1, v1;  // Normalized UV rect in atlas [0..1]
         int   advanceWidth;    // Glyph advance (x movement)
         int   offsetX;         // X bearing
         int   offsetY;         // Offset from text top to glyph top
-        int   width;
-        int   height;
+        int   width = 0;
+        int   height = 0;
+        uint32_t atlasX = 0;
+        uint32_t atlasY = 0;
+        uint32_t atlasWidth = 0;
+        uint32_t atlasHeight = 0;
+        bool baked = false;
     };
     struct FontAtlas {
         VkImage image = VK_NULL_HANDLE;
@@ -79,7 +176,19 @@ namespace {
         VkDeviceMemory memory = VK_NULL_HANDLE;
         uint32_t width = 1024;
         uint32_t height = 512;
+        VkFormat format = VK_FORMAT_R8_UNORM;
         VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    };
+
+    struct RasterizedGlyph {
+        std::vector<uint8_t> pixels;
+        uint32_t bitmapWidth = 0;
+        uint32_t bitmapHeight = 0;
+        int layoutWidth = 0;
+        int layoutHeight = 0;
+        int advanceWidth = 0;
+        int offsetX = 0;
+        int offsetY = 0;
     };
 
     struct FontRendererState {
@@ -95,6 +204,7 @@ namespace {
         std::map<Spherical::FontStyle, std::vector<GlyphInfo>> glyphMetrics;
         std::map<Spherical::FontStyle, uint32_t> fontSizes;
         std::map<Spherical::FontStyle, Spherical::FontStyle> fontStyleKeys;
+        Spherical::FontRenderMode renderMode = Spherical::FontRenderMode::MSDF;
         float dpiScale = 1.0f;
 
         bool nkFontReady = false;
@@ -102,6 +212,188 @@ namespace {
 
     FontRendererState g_fontState{};
     FT_Library g_ftLibrary = nullptr;
+
+    bool ResizeAtlas(uint32_t& atlasW, uint32_t& atlasH, uint32_t bytesPerPixel, std::vector<uint8_t>& atlasBuffer) {
+        const uint32_t newW = atlasW * 2;
+        const uint32_t newH = atlasH * 2;
+        if (newW > kMaxAtlasWidth || newH > kMaxAtlasHeight) {
+            std::fprintf(stderr, "[FontRenderer] Atlas size would exceed maximum (%ux%u)\n", kMaxAtlasWidth, kMaxAtlasHeight);
+            return false;
+        }
+
+        std::vector<uint8_t> newBuffer(static_cast<size_t>(newW) * static_cast<size_t>(newH) * bytesPerPixel, 0);
+        for (uint32_t y = 0; y < atlasH; ++y) {
+            std::memcpy(&newBuffer[static_cast<size_t>(y) * newW * bytesPerPixel],
+                        &atlasBuffer[static_cast<size_t>(y) * atlasW * bytesPerPixel],
+                        static_cast<size_t>(atlasW) * bytesPerPixel);
+        }
+
+        atlasBuffer = std::move(newBuffer);
+        atlasW = newW;
+        atlasH = newH;
+
+        std::fprintf(stderr, "[FontRenderer] Atlas grown to %ux%u (%s mode)\n", atlasW, atlasH, GetRenderModeName(g_fontState.renderMode));
+        return true;
+    }
+
+    bool EnsureGlyphFits(uint32_t glyphW, uint32_t glyphH, uint32_t& cursorX, uint32_t& cursorY,
+                         uint32_t& rowHeight, uint32_t& atlasW, uint32_t& atlasH, uint32_t bytesPerPixel,
+                         std::vector<uint8_t>& atlasBuffer) {
+        while (true) {
+            if (glyphW + kGlyphPadding >= atlasW || glyphH + kGlyphPadding >= atlasH) {
+                if (!ResizeAtlas(atlasW, atlasH, bytesPerPixel, atlasBuffer)) {
+                    return false;
+                }
+                continue;
+            }
+
+            if (cursorX + glyphW + kGlyphPadding >= atlasW) {
+                cursorX = kGlyphPadding;
+                cursorY += rowHeight + kGlyphPadding;
+                rowHeight = 0;
+            }
+
+            if (cursorY + glyphH + kGlyphPadding < atlasH) {
+                return true;
+            }
+
+            if (!ResizeAtlas(atlasW, atlasH, bytesPerPixel, atlasBuffer)) {
+                return false;
+            }
+        }
+    }
+
+    void BlitGlyphIntoAtlas(const std::vector<uint8_t>& glyphPixels, uint32_t glyphW, uint32_t glyphH,
+                            uint32_t atlasX, uint32_t atlasY, uint32_t atlasW, uint32_t bytesPerPixel,
+                            std::vector<uint8_t>& atlasBuffer) {
+        if (glyphPixels.empty() || glyphW == 0 || glyphH == 0) {
+            return;
+        }
+
+        const size_t glyphRowBytes = static_cast<size_t>(glyphW) * bytesPerPixel;
+        for (uint32_t y = 0; y < glyphH; ++y) {
+            std::memcpy(
+                &atlasBuffer[(static_cast<size_t>(atlasY + y) * atlasW + atlasX) * bytesPerPixel],
+                &glyphPixels[static_cast<size_t>(y) * glyphRowBytes],
+                glyphRowBytes);
+        }
+    }
+
+    bool BakeMsdfGlyph(FT_Face fontFace, msdfgen::FontHandle* msdfFont, uint32_t fontPixelSize,
+                       int fontAscent, unsigned int codepoint, RasterizedGlyph& glyph) {
+        if (fontFace == nullptr || msdfFont == nullptr || fontFace->units_per_EM <= 0) {
+            return false;
+        }
+
+        if (FT_Load_Char(fontFace, codepoint, FT_LOAD_NO_HINTING) != 0) {
+            return false;
+        }
+
+        glyph.advanceWidth = static_cast<int>(std::lround(fontFace->glyph->advance.x / 64.0));
+
+        msdfgen::Shape shape;
+        if (!msdfgen::loadGlyph(shape, msdfFont, static_cast<msdfgen::unicode_t>(codepoint),
+                                msdfgen::FONT_SCALING_NONE)) {
+            return true;
+        }
+
+        if (shape.contours.empty()) {
+            return true;
+        }
+
+        shape.normalize();
+        msdfgen::edgeColoringSimple(shape, kMsdfEdgeColoringAngle, static_cast<unsigned long long>(codepoint));
+
+        const double uiGeometryScale = static_cast<double>(fontPixelSize) / static_cast<double>(fontFace->units_per_EM);
+        const double geometryScale = static_cast<double>(fontPixelSize * kMsdfBakeScale) / static_cast<double>(fontFace->units_per_EM);
+        if (uiGeometryScale <= 0.0 || geometryScale <= 0.0) {
+            return false;
+        }
+
+        const auto bounds = shape.getBounds();
+        const double halfPixelRange = kMsdfPxRange * 0.5;
+        const double glyphLeft = std::floor(bounds.l * geometryScale - halfPixelRange);
+        const double glyphRight = std::ceil(bounds.r * geometryScale + halfPixelRange);
+        const double glyphBottom = std::floor(bounds.b * geometryScale - halfPixelRange);
+        const double glyphTop = std::ceil(bounds.t * geometryScale + halfPixelRange);
+
+        glyph.bitmapWidth = static_cast<uint32_t>(std::max(0.0, glyphRight - glyphLeft));
+        glyph.bitmapHeight = static_cast<uint32_t>(std::max(0.0, glyphTop - glyphBottom));
+
+        const double uiHalfPixelRange = halfPixelRange / kMsdfBakeScale;
+        const double layoutLeft = std::floor(bounds.l * uiGeometryScale - uiHalfPixelRange);
+        const double layoutRight = std::ceil(bounds.r * uiGeometryScale + uiHalfPixelRange);
+        const double layoutBottom = std::floor(bounds.b * uiGeometryScale - uiHalfPixelRange);
+        const double layoutTop = std::ceil(bounds.t * uiGeometryScale + uiHalfPixelRange);
+
+        glyph.layoutWidth = std::max(1, static_cast<int>(layoutRight - layoutLeft));
+        glyph.layoutHeight = std::max(1, static_cast<int>(layoutTop - layoutBottom));
+        glyph.offsetX = static_cast<int>(layoutLeft);
+        glyph.offsetY = fontAscent - static_cast<int>(layoutTop);
+
+        if (glyph.bitmapWidth == 0 || glyph.bitmapHeight == 0) {
+            return true;
+        }
+
+        msdfgen::Bitmap<float, 3> msdfBitmap(static_cast<int>(glyph.bitmapWidth), static_cast<int>(glyph.bitmapHeight), msdfgen::Y_DOWNWARD);
+        const msdfgen::Projection projection(
+            msdfgen::Vector2(geometryScale, geometryScale),
+            msdfgen::Vector2(-glyphLeft / geometryScale, -glyphBottom / geometryScale));
+        const msdfgen::SDFTransformation transformation(
+            projection,
+            msdfgen::Range(kMsdfPxRange / geometryScale));
+        msdfgen::MSDFGeneratorConfig generatorConfig;
+        generatorConfig.overlapSupport = true;
+        generatorConfig.errorCorrection.mode = msdfgen::ErrorCorrectionConfig::EDGE_PRIORITY;
+        generatorConfig.errorCorrection.distanceCheckMode = msdfgen::ErrorCorrectionConfig::CHECK_DISTANCE_AT_EDGE;
+
+        msdfgen::generateMSDF(msdfBitmap, shape, transformation, generatorConfig);
+
+        glyph.pixels.resize(static_cast<size_t>(glyph.bitmapWidth) * static_cast<size_t>(glyph.bitmapHeight) * 4u);
+        for (uint32_t y = 0; y < glyph.bitmapHeight; ++y) {
+            for (uint32_t x = 0; x < glyph.bitmapWidth; ++x) {
+                const float* src = msdfBitmap(static_cast<int>(x), static_cast<int>(y));
+                uint8_t* dst = &glyph.pixels[(static_cast<size_t>(y) * glyph.bitmapWidth + x) * 4u];
+                dst[0] = msdfgen::pixelFloatToByte(src[0]);
+                dst[1] = msdfgen::pixelFloatToByte(src[1]);
+                dst[2] = msdfgen::pixelFloatToByte(src[2]);
+                dst[3] = 255;
+            }
+        }
+
+        return true;
+    }
+
+    void FinalizeGlyphUVs() {
+        const float atlasWidth = static_cast<float>(g_fontState.atlas.width);
+        const float atlasHeight = static_cast<float>(g_fontState.atlas.height);
+        if (atlasWidth <= 0.0f || atlasHeight <= 0.0f) {
+            return;
+        }
+
+        for (auto& glyphEntry : g_fontState.glyphMetrics) {
+            for (GlyphInfo& glyph : glyphEntry.second) {
+                if (!glyph.baked) {
+                    continue;
+                }
+
+                const uint32_t atlasGlyphWidth = glyph.atlasWidth;
+                const uint32_t atlasGlyphHeight = glyph.atlasHeight;
+
+                if (g_fontState.renderMode == Spherical::FontRenderMode::MSDF) {
+                    glyph.u0 = static_cast<float>(glyph.atlasX) / atlasWidth;
+                    glyph.v0 = static_cast<float>(glyph.atlasY) / atlasHeight;
+                    glyph.u1 = static_cast<float>(glyph.atlasX + atlasGlyphWidth) / atlasWidth;
+                    glyph.v1 = static_cast<float>(glyph.atlasY + atlasGlyphHeight) / atlasHeight;
+                } else {
+                    glyph.u0 = (static_cast<float>(glyph.atlasX) + 0.5f) / atlasWidth;
+                    glyph.v0 = (static_cast<float>(glyph.atlasY) + 0.5f) / atlasHeight;
+                    glyph.u1 = (static_cast<float>(glyph.atlasX + atlasGlyphWidth) - 0.5f) / atlasWidth;
+                    glyph.v1 = (static_cast<float>(glyph.atlasY + atlasGlyphHeight) - 0.5f) / atlasHeight;
+                }
+            }
+        }
+    }
 
     uint32_t FindMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeFilter, VkMemoryPropertyFlags properties) {
         VkPhysicalDeviceMemoryProperties memProperties;
@@ -276,7 +568,7 @@ namespace {
         });
     }
 
-    bool CreateImage(VkImage& image, VkDeviceMemory& memory, uint32_t width, uint32_t height) {
+    bool CreateImage(VkImage& image, VkDeviceMemory& memory, uint32_t width, uint32_t height, VkFormat format) {
         VkImageCreateInfo imageInfo{};
         imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -285,7 +577,7 @@ namespace {
         imageInfo.extent.depth = 1;
         imageInfo.mipLevels = 1;
         imageInfo.arrayLayers = 1;
-        imageInfo.format = VK_FORMAT_R8_UNORM;
+        imageInfo.format = format;
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -320,12 +612,12 @@ namespace {
         return true;
     }
 
-    bool CreateImageView(VkImageView& imageView, VkImage image) {
+    bool CreateImageView(VkImageView& imageView, VkImage image, VkFormat format) {
         VkImageViewCreateInfo viewInfo{};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         viewInfo.image = image;
         viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = VK_FORMAT_R8_UNORM;
+        viewInfo.format = format;
         viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         viewInfo.subresourceRange.baseMipLevel = 0;
         viewInfo.subresourceRange.levelCount = 1;
@@ -398,7 +690,7 @@ namespace Spherical {
 namespace FontRenderer {
     bool Init(VkDevice device, VkPhysicalDevice physicalDevice,
              VkQueue graphicsQueue, VkCommandPool commandPool,
-             const char* fontPath, float dpiScale) {
+             const char* fontPath, float dpiScale, FontRenderMode renderMode) {
         if (device == VK_NULL_HANDLE || physicalDevice == VK_NULL_HANDLE ||
             graphicsQueue == VK_NULL_HANDLE || commandPool == VK_NULL_HANDLE) {
             return false;
@@ -412,9 +704,11 @@ namespace FontRenderer {
         g_fontState.physicalDevice = physicalDevice;
         g_fontState.graphicsQueue = graphicsQueue;
         g_fontState.commandPool = commandPool;
+        g_fontState.renderMode = renderMode;
         g_fontState.dpiScale = SanitizeDpiScale(dpiScale);
         g_fontState.atlas.width = ComputeScaledAtlasDimension(kBaseAtlasWidth, g_fontState.dpiScale);
         g_fontState.atlas.height = ComputeScaledAtlasDimension(kBaseAtlasHeight, g_fontState.dpiScale);
+        g_fontState.atlas.format = GetAtlasFormat(renderMode);
         
         // Define our font styles in points and convert them to display-scaled pixels.
         g_fontState.fontSizes = {
@@ -428,7 +722,15 @@ namespace FontRenderer {
         }
 
         // Load font
-        const char* activeFontPath = fontPath ? fontPath : "C:\\Windows\\Fonts\\arial.ttf";
+        const std::string fallbackFontPath = ResolveDefaultFontPath(g_fontState.renderMode);
+        const char* activeFontPath = (fontPath != nullptr && fontPath[0] != '\0')
+            ? fontPath
+            : (fallbackFontPath.empty() ? nullptr : fallbackFontPath.c_str());
+        if (activeFontPath == nullptr) {
+            FT_Done_FreeType(g_ftLibrary);
+            g_ftLibrary = nullptr;
+            return false;
+        }
         FT_Face fontFace = nullptr;
         if (FT_New_Face(g_ftLibrary, activeFontPath, 0, &fontFace) != 0) {
             FT_Done_FreeType(g_ftLibrary);
@@ -436,13 +738,43 @@ namespace FontRenderer {
             return false;
         }
 
-        // BAKE GLYPHS for each font style
-        const uint32_t ATLAS_W = g_fontState.atlas.width;
-        const uint32_t ATLAS_H = g_fontState.atlas.height;
-        std::vector<uint8_t> atlasBuffer(ATLAS_W * ATLAS_H, 0);
-        atlasBuffer[0] = 255; // Reserved white texel
+        msdfgen::FontHandle* msdfFont = nullptr;
+        if (g_fontState.renderMode == FontRenderMode::MSDF) {
+            msdfFont = msdfgen::adoptFreetypeFont(fontFace);
+            if (msdfFont == nullptr) {
+                FT_Done_Face(fontFace);
+                FT_Done_FreeType(g_ftLibrary);
+                g_ftLibrary = nullptr;
+                return false;
+            }
+        }
 
-        uint32_t cursorX = 8, cursorY = 8;
+        auto releaseFontResources = [&]() {
+            if (msdfFont != nullptr) {
+                msdfgen::destroyFont(msdfFont);
+                msdfFont = nullptr;
+            }
+            if (fontFace != nullptr) {
+                FT_Done_Face(fontFace);
+                fontFace = nullptr;
+            }
+            if (g_ftLibrary != nullptr) {
+                FT_Done_FreeType(g_ftLibrary);
+                g_ftLibrary = nullptr;
+            }
+        };
+
+        // Bake glyphs for each font style into a shared atlas.
+        uint32_t atlasW = g_fontState.atlas.width;
+        uint32_t atlasH = g_fontState.atlas.height;
+        const uint32_t bytesPerPixel = GetAtlasBytesPerPixel(g_fontState.renderMode);
+        std::vector<uint8_t> atlasBuffer(static_cast<size_t>(atlasW) * static_cast<size_t>(atlasH) * bytesPerPixel, 0);
+        for (uint32_t channel = 0; channel < bytesPerPixel; ++channel) {
+            atlasBuffer[channel] = 255;
+        }
+
+        uint32_t cursorX = kGlyphPadding;
+        uint32_t cursorY = kGlyphPadding;
         uint32_t rowHeight = 0;
 
         for (const auto& fontEntry : g_fontState.fontSizes) {
@@ -454,57 +786,81 @@ namespace FontRenderer {
             const int fontAscent = static_cast<int>(fontFace->size->metrics.ascender >> 6);
 
             for (int c = 32; c <= 127; c++) {
-                if (FT_Load_Char(fontFace, c, FT_LOAD_NO_HINTING) != 0) continue;
-                
-                bool isSDF = (FT_Render_Glyph(fontFace->glyph, FT_RENDER_MODE_SDF) == 0);
-                if (!isSDF) {
-                    if (FT_Load_Char(fontFace, c, FT_LOAD_NO_HINTING | FT_LOAD_RENDER) != 0) continue;
+                RasterizedGlyph glyph;
+                bool bakedGlyph = false;
+                if (g_fontState.renderMode == FontRenderMode::MSDF) {
+                    bakedGlyph = BakeMsdfGlyph(fontFace, msdfFont, size, fontAscent, static_cast<unsigned int>(c), glyph);
+                } else {
+                    const FT_Int32 loadFlags = GetHintingTarget(style) | FT_LOAD_RENDER;
+                    if (FT_Load_Char(fontFace, c, loadFlags) != 0) {
+                        continue;
+                    }
+
+                    FT_Bitmap& bitmap = fontFace->glyph->bitmap;
+                    glyph.bitmapWidth = bitmap.width;
+                    glyph.bitmapHeight = bitmap.rows;
+                    glyph.layoutWidth = static_cast<int>(bitmap.width);
+                    glyph.layoutHeight = static_cast<int>(bitmap.rows);
+                    glyph.advanceWidth = static_cast<int>(fontFace->glyph->advance.x >> 6);
+                    glyph.offsetX = fontFace->glyph->bitmap_left;
+                    glyph.offsetY = fontAscent - fontFace->glyph->bitmap_top;
+                    glyph.pixels.resize(static_cast<size_t>(glyph.bitmapWidth) * static_cast<size_t>(glyph.bitmapHeight));
+                    for (uint32_t y = 0; y < glyph.bitmapHeight; ++y) {
+                        const uint8_t* srcRow = bitmap.buffer + static_cast<size_t>(y) * static_cast<size_t>(std::abs(bitmap.pitch));
+                        std::memcpy(glyph.pixels.data() + static_cast<size_t>(y) * glyph.bitmapWidth, srcRow, glyph.bitmapWidth);
+                    }
+                    bakedGlyph = true;
                 }
 
-                FT_Bitmap& bitmap = fontFace->glyph->bitmap;
-                uint32_t glyphW = bitmap.width;
-                uint32_t glyphH = bitmap.rows;
-
-                if (cursorX + glyphW + 8 >= ATLAS_W) {
-                    cursorX = 8;
-                    cursorY += rowHeight + 8;
-                    rowHeight = 0;
-                }
-                if (cursorY + glyphH + 8 >= ATLAS_H) {
-                    fprintf(stderr, "[FontRenderer] Atlas overflow\n");
+                if (!bakedGlyph) {
                     continue;
                 }
 
-                for (uint32_t y = 0; y < glyphH; y++) {
-                    for (uint32_t x = 0; x < glyphW; x++) {
-                        uint8_t pixel = bitmap.buffer[y * bitmap.pitch + x];
-                        if (!isSDF) pixel = (pixel >= 128) ? 255 : 0;
-                        atlasBuffer[(cursorY + y) * ATLAS_W + (cursorX + x)] = pixel;
-                    }
+                const uint32_t glyphW = glyph.bitmapWidth;
+                const uint32_t glyphH = glyph.bitmapHeight;
+
+                if (!EnsureGlyphFits(glyphW, glyphH, cursorX, cursorY, rowHeight, atlasW, atlasH, bytesPerPixel, atlasBuffer)) {
+                    std::fprintf(stderr, "[FontRenderer] Cannot bake glyph (atlas full): %c (%d) in %s mode\n", c, c, GetRenderModeName(g_fontState.renderMode));
+                    continue;
                 }
+
+                BlitGlyphIntoAtlas(glyph.pixels, glyphW, glyphH, cursorX, cursorY, atlasW, bytesPerPixel, atlasBuffer);
 
                 int glyphIdx = c - 32;
                 auto& glyphInfo = g_fontState.glyphMetrics[style][glyphIdx];
-                glyphInfo.u0 = (static_cast<float>(cursorX) + 0.5f) / static_cast<float>(ATLAS_W);
-                glyphInfo.v0 = (static_cast<float>(cursorY) + 0.5f) / static_cast<float>(ATLAS_H);
-                glyphInfo.u1 = (static_cast<float>(cursorX + glyphW) - 0.5f) / static_cast<float>(ATLAS_W);
-                glyphInfo.v1 = (static_cast<float>(cursorY + glyphH) - 0.5f) / static_cast<float>(ATLAS_H);
-                glyphInfo.advanceWidth = static_cast<int>(fontFace->glyph->advance.x >> 6);
-                glyphInfo.offsetX = fontFace->glyph->bitmap_left;
-                glyphInfo.offsetY = fontAscent - fontFace->glyph->bitmap_top;
-                glyphInfo.width = static_cast<int>(glyphW);
-                glyphInfo.height = static_cast<int>(glyphH);
+                glyphInfo.advanceWidth = glyph.advanceWidth;
+                glyphInfo.offsetX = glyph.offsetX;
+                glyphInfo.offsetY = glyph.offsetY;
+                glyphInfo.width = glyph.layoutWidth;
+                glyphInfo.height = glyph.layoutHeight;
+                glyphInfo.atlasX = cursorX;
+                glyphInfo.atlasY = cursorY;
+                glyphInfo.atlasWidth = glyphW;
+                glyphInfo.atlasHeight = glyphH;
+                glyphInfo.baked = true;
 
-                cursorX += glyphW + 8;
+                cursorX += glyphW + kGlyphPadding;
                 rowHeight = std::max(rowHeight, glyphH);
             }
         }
 
-        FT_Done_Face(fontFace);
+        if (msdfFont != nullptr) {
+            msdfgen::destroyFont(msdfFont);
+            msdfFont = nullptr;
+        }
+        if (fontFace != nullptr) {
+            FT_Done_Face(fontFace);
+            fontFace = nullptr;
+        }
+
+        g_fontState.atlas.width = atlasW;
+        g_fontState.atlas.height = atlasH;
+        FinalizeGlyphUVs();
 
         // Create and upload atlas image (same as before)
-        if (!CreateImage(g_fontState.atlas.image, g_fontState.atlas.memory, ATLAS_W, ATLAS_H)) {
-            FT_Done_FreeType(g_ftLibrary); g_ftLibrary = nullptr; return false;
+        if (!CreateImage(g_fontState.atlas.image, g_fontState.atlas.memory, atlasW, atlasH, g_fontState.atlas.format)) {
+            releaseFontResources();
+            return false;
         }
         
         VkBuffer stagingBuffer = VK_NULL_HANDLE;
@@ -513,7 +869,8 @@ namespace FontRenderer {
         if (!CreateBuffer(stagingBuffer, stagingMemory, atlasBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
             vkFreeMemory(g_fontState.device, g_fontState.atlas.memory, nullptr);
             vkDestroyImage(g_fontState.device, g_fontState.atlas.image, nullptr);
-            FT_Done_FreeType(g_ftLibrary); g_ftLibrary = nullptr; return false;
+            releaseFontResources();
+            return false;
         }
 
         void* mappedMemory = nullptr;
@@ -524,25 +881,30 @@ namespace FontRenderer {
             DestroyBuffer(stagingBuffer, stagingMemory);
             vkFreeMemory(g_fontState.device, g_fontState.atlas.memory, nullptr);
             vkDestroyImage(g_fontState.device, g_fontState.atlas.image, nullptr);
-            FT_Done_FreeType(g_ftLibrary); g_ftLibrary = nullptr; return false;
+            releaseFontResources();
+            return false;
         }
 
         if (!TransitionImageLayout(g_fontState.atlas.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) ||
-            !CopyBufferToImage(stagingBuffer, g_fontState.atlas.image, ATLAS_W, ATLAS_H) ||
+            !CopyBufferToImage(stagingBuffer, g_fontState.atlas.image, atlasW, atlasH) ||
             !TransitionImageLayout(g_fontState.atlas.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
             DestroyBuffer(stagingBuffer, stagingMemory);
             vkFreeMemory(g_fontState.device, g_fontState.atlas.memory, nullptr);
             vkDestroyImage(g_fontState.device, g_fontState.atlas.image, nullptr);
-            FT_Done_FreeType(g_ftLibrary); g_ftLibrary = nullptr; return false;
+            releaseFontResources();
+            return false;
         }
         g_fontState.atlas.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         DestroyBuffer(stagingBuffer, stagingMemory);
 
-        if (!CreateImageView(g_fontState.atlas.imageView, g_fontState.atlas.image)) {
+        if (!CreateImageView(g_fontState.atlas.imageView, g_fontState.atlas.image, g_fontState.atlas.format)) {
             vkFreeMemory(g_fontState.device, g_fontState.atlas.memory, nullptr);
             vkDestroyImage(g_fontState.device, g_fontState.atlas.image, nullptr);
-            FT_Done_FreeType(g_ftLibrary); g_ftLibrary = nullptr; return false;
+            releaseFontResources();
+            return false;
         }
+
+        releaseFontResources();
 
         // Create nk_user_font for each style
         for (const auto& fontEntry : g_fontState.fontSizes) {
@@ -580,6 +942,14 @@ namespace FontRenderer {
 
     VkImageView GetAtlasImageView() {
         return g_fontState.atlas.imageView;
+    }
+
+    VkExtent2D GetAtlasExtent() {
+        return VkExtent2D{g_fontState.atlas.width, g_fontState.atlas.height};
+    }
+
+    FontRenderMode GetRenderMode() {
+        return g_fontState.renderMode;
     }
 
     void Shutdown() {
