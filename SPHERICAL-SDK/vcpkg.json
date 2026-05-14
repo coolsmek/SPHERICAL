@@ -1,0 +1,25 @@
+﻿{
+  "name": "spherical-sdk",
+  "version-string": "0.1.0",
+  "dependencies": [
+    {
+      "name": "sdl3",
+      "features": [
+        "vulkan"
+      ]
+    },
+    "vulkan-headers",
+    "vulkan-loader",
+    "glm",
+    "freetype",
+    {
+      "name": "msdfgen",
+      "default-features": false,
+      "features": [
+        "extensions"
+      ]
+    }
+  ],
+  "builtin-baseline": "b8922ae57c61d4192a504bbb955d19599fa68f2a"
+}
+
