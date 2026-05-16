@@ -1,6 +1,10 @@
 find_package(SDL3 CONFIG REQUIRED)
 
-add_executable(SPHERICAL_Test main.cpp)
+add_executable(SPHERICAL_Test
+    main.cpp
+    ui_theme.cpp
+    ui_style_scope.cpp
+)
 target_include_directories(SPHERICAL_Test PRIVATE ${CMAKE_SOURCE_DIR}/SPHERICAL-SDK/include)
 target_link_libraries(SPHERICAL_Test PRIVATE 
     Spherical 
@@ -12,6 +16,9 @@ add_custom_command(TARGET SPHERICAL_Test POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/fonts"
             "$<TARGET_FILE_DIR:SPHERICAL_Test>/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:Spherical>"
+            "$<TARGET_FILE_DIR:SPHERICAL_Test>/"
 )
 
 # Windows-specific: Use Windows subsystem for GUI app

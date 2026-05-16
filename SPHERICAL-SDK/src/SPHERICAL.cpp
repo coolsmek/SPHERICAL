@@ -13,6 +13,7 @@
 #include <thread>
 #include <array>
 #include <cstddef>
+#include <unordered_map>
 #include <fstream>
 #include <string>
 #include <iostream>
@@ -71,6 +72,56 @@ namespace {
         bool active = false;
         float* valueRef = nullptr;
     };
+
+    enum class PanelDragMode {
+        None,
+        Move,
+        ResizeTopLeft,
+        ResizeTopRight,
+        ResizeBottomLeft,
+        ResizeBottomRight,
+        ResizeTop,
+        ResizeRight,
+        ResizeBottom,
+        ResizeLeft
+    };
+
+    struct PanelDragState {
+        bool active = false;
+        std::string windowTitle;
+        PanelDragMode mode = PanelDragMode::None;
+        float mouseStartX = 0.0f;
+        float mouseStartY = 0.0f;
+        float globalMouseStartX = 0.0f;
+        float globalMouseStartY = 0.0f;
+        struct nk_rect panelStartBounds{};
+    };
+
+    struct PanelPersistentState {
+        bool initialized = false;
+        float offsetFromCenterX = 0.0f;
+        float offsetFromCenterY = 0.0f;
+        float width = 0.0f;
+        float height = 0.0f;
+    };
+
+    enum class CursorRequest {
+        Default,
+        ResizeNwse,
+        ResizeNesw,
+        ResizeNs,
+        ResizeEw
+    };
+
+    struct CursorState {
+        CursorRequest requested = CursorRequest::Default;
+        CursorRequest applied = CursorRequest::Default;
+        SDL_Cursor* arrow = nullptr;
+        SDL_Cursor* nwse = nullptr;
+        SDL_Cursor* nesw = nullptr;
+        SDL_Cursor* ns = nullptr;
+        SDL_Cursor* ew = nullptr;
+    };
     
     BackendState g_backend;
     bool g_textInputWasActive = false;
@@ -128,6 +179,9 @@ namespace {
 
     ScrollbarDragState g_scrollbarDrag;
     SliderTrackDragState g_sliderTrackDrag;
+    PanelDragState g_panelDrag;
+    std::unordered_map<std::string, PanelPersistentState> g_panelStates;
+    CursorState g_cursorState;
 
     static bool IsLeftMouseDown(const nk_context* ctx) {
         return ctx != nullptr && ctx->input.mouse.buttons[NK_BUTTON_LEFT].down != 0;
@@ -152,7 +206,137 @@ namespace {
         return mx >= rect.x && mx <= (rect.x + rect.w) &&
                my >= rect.y && my <= (rect.y + rect.h);
     }
-    
+
+    static float GetWindowHeaderHeight(const nk_context* ctx) {
+        if (ctx == nullptr || ctx->style.font == nullptr) {
+            return 24.0f;
+        }
+        return std::max(24.0f, ctx->style.font->height + 2.0f * ctx->style.window.header.padding.y);
+    }
+
+    static int CursorPriority(CursorRequest request) {
+        switch (request) {
+            case CursorRequest::ResizeNwse:
+            case CursorRequest::ResizeNesw:
+            case CursorRequest::ResizeNs:
+            case CursorRequest::ResizeEw:
+                return 3;
+            case CursorRequest::Default:
+            default:
+                return 1;
+        }
+    }
+
+    static void RequestCursor(CursorRequest request) {
+        if (CursorPriority(request) >= CursorPriority(g_cursorState.requested)) {
+            g_cursorState.requested = request;
+        }
+    }
+
+    static SDL_SystemCursor ResolveSystemCursor(CursorRequest request) {
+        switch (request) {
+            case CursorRequest::ResizeNwse:
+                return SDL_SYSTEM_CURSOR_NWSE_RESIZE;
+            case CursorRequest::ResizeNesw:
+                return SDL_SYSTEM_CURSOR_NESW_RESIZE;
+            case CursorRequest::ResizeNs:
+                return SDL_SYSTEM_CURSOR_NS_RESIZE;
+            case CursorRequest::ResizeEw:
+                return SDL_SYSTEM_CURSOR_EW_RESIZE;
+            case CursorRequest::Default:
+            default:
+                return SDL_SYSTEM_CURSOR_DEFAULT;
+        }
+    }
+
+    static SDL_Cursor* EnsureCursor(CursorRequest request) {
+        SDL_Cursor** slot = &g_cursorState.arrow;
+        switch (request) {
+            case CursorRequest::ResizeNwse:
+                slot = &g_cursorState.nwse;
+                break;
+            case CursorRequest::ResizeNesw:
+                slot = &g_cursorState.nesw;
+                break;
+            case CursorRequest::ResizeNs:
+                slot = &g_cursorState.ns;
+                break;
+            case CursorRequest::ResizeEw:
+                slot = &g_cursorState.ew;
+                break;
+            case CursorRequest::Default:
+            default:
+                slot = &g_cursorState.arrow;
+                break;
+        }
+
+        if (*slot == nullptr) {
+            *slot = SDL_CreateSystemCursor(ResolveSystemCursor(request));
+        }
+
+        return *slot;
+    }
+
+    static void ApplyRequestedCursor() {
+        if (g_backend.window == nullptr) {
+            return;
+        }
+
+        if (g_cursorState.requested == g_cursorState.applied) {
+            return;
+        }
+
+        if (SDL_Cursor* cursor = EnsureCursor(g_cursorState.requested)) {
+            SDL_SetCursor(cursor);
+            g_cursorState.applied = g_cursorState.requested;
+        }
+    }
+
+    static void DestroyCursor(SDL_Cursor*& cursor) {
+        if (cursor != nullptr) {
+            SDL_DestroyCursor(cursor);
+            cursor = nullptr;
+        }
+    }
+
+    static void ShutdownCursors() {
+        DestroyCursor(g_cursorState.arrow);
+        DestroyCursor(g_cursorState.nwse);
+        DestroyCursor(g_cursorState.nesw);
+        DestroyCursor(g_cursorState.ns);
+        DestroyCursor(g_cursorState.ew);
+        g_cursorState.requested = CursorRequest::Default;
+        g_cursorState.applied = CursorRequest::Default;
+    }
+
+    static void DrawCenterMarkerOverlay(nk_context* context, const VkExtent2D& framebufferExtent) {
+        if (context == nullptr) {
+            return;
+        }
+
+        const float width = static_cast<float>(framebufferExtent.width);
+        const float height = static_cast<float>(framebufferExtent.height);
+        if (width <= 0.0f || height <= 0.0f) {
+            return;
+        }
+
+        const nk_flags flags = NK_WINDOW_NO_SCROLLBAR | NK_WINDOW_NO_INPUT | NK_WINDOW_BACKGROUND;
+        if (nk_begin(context, "__SPHERICAL_CENTER_MARKER_OVERLAY", nk_rect(0.0f, 0.0f, width, height), flags)) {
+            if (context->current != nullptr) {
+                nk_command_buffer* buffer = &context->current->buffer;
+                const float cx = width * 0.5f;
+                const float cy = height * 0.5f;
+                const nk_color red = nk_rgb(230, 60, 60);
+                const float arm = 6.0f;
+
+                nk_stroke_line(buffer, cx - arm, cy, cx + arm, cy, 1.5f, red);
+                nk_stroke_line(buffer, cx, cy - arm, cx, cy + arm, 1.5f, red);
+                nk_fill_circle(buffer, nk_rect(cx - 1.5f, cy - 1.5f, 3.0f, 3.0f), red);
+            }
+        }
+        nk_end(context);
+    }
+
     class UIPainterImpl : public Spherical::UIPainter {
     private:
         struct PanelBodyStyleSnapshot {
@@ -187,6 +371,8 @@ namespace {
         nk_context* m_ctx = nullptr;
         VkExtent2D m_framebufferExtent{};
         const char* m_activePanelTitle = nullptr;
+        Spherical::UIRect m_currentPanelBounds{};
+        Spherical::UIRect m_currentPanelContentBounds{};
         std::vector<nk_color> m_textColorStack;
         std::vector<PanelBodyStyleSnapshot> m_panelBodyColorStack;
         std::vector<StyleItemStateSnapshot> m_panelTitleBarColorStack;
@@ -866,39 +1052,15 @@ namespace {
             }
         }
 
-        bool begin_panel(const char* title, int x, int y, int width, int height) override {
-            // Use the title font for the panel header
-            push_font(Spherical::FontStyle::Title);
-            const bool result = nk_begin(m_ctx, title, nk_rect(x, y, width, height), NK_WINDOW_BORDER | NK_WINDOW_TITLE) != 0;
-            // Pop back to the regular font for the panel content
-            pop_font();
+        bool begin_panel(const char* title, int x, int y, int width, int height) override;
 
-            if (result) {
-                apply_active_vertical_scrollbar_drag(title);
-            }
+        void end_panel() override;
 
-            // Keep the active panel title so end_panel can refresh scrollbar metrics after content layout.
-            m_activePanelTitle = result ? title : nullptr;
-            if (!result) {
-                release_scrollbar_drag_if_needed(title);
-            }
+        Spherical::UIRect get_current_panel_bounds() const override;
 
-            return result;
-        }
+        Spherical::UIRect get_current_panel_content_bounds() const override;
 
-        void end_panel() override {
-            if (m_activePanelTitle != nullptr) {
-                // Refresh drag geometry and detect drag-start after content layout is known for this frame.
-                refresh_vertical_scrollbar_drag_state(m_activePanelTitle);
-            }
-            nk_end(m_ctx);
-            m_activePanelTitle = nullptr;
-        }
-
-        void label(const char* text) override {
-            nk_layout_row_dynamic(m_ctx, label_row_height(), 1);
-            nk_label(m_ctx, text, NK_TEXT_LEFT);
-        }
+        void label(const char* text) override;
 
         void push_font(Spherical::FontStyle style) override {
             const nk_user_font* font = Spherical::FontRenderer::GetFontHandle(style);
@@ -914,144 +1076,15 @@ namespace {
             nk_style_pop_font(m_ctx);
         }
 
-        void spacing() override {
-            nk_layout_row_dynamic(m_ctx, spacing_row_height(), 1);
-            nk_spacing(m_ctx, 1);
-        }
+        void spacing() override;
         
-        void slider_float(const char* label, float* value, float min, float max, float step) override {
-            nk_layout_row_dynamic(m_ctx, control_row_height(), 2);
-            nk_label(m_ctx, label, NK_TEXT_LEFT);
+        void slider_float(const char* label, float* value, float min, float max, float step) override;
 
-            if (m_ctx == nullptr || value == nullptr || m_ctx->current == nullptr || m_ctx->current->layout == nullptr) {
-                return;
-            }
+        bool button(const char* label) override;
 
-            nk_window* win = m_ctx->current;
-            nk_panel* layout = win->layout;
-            const nk_style* style = &m_ctx->style;
-            const nk_style_slider* sliderStyle = &style->slider;
+        void text_input(const char* label, char* buffer, size_t bufferSize) override;
 
-            struct nk_rect bounds{};
-            const nk_widget_layout_states widgetState = nk_widget(&bounds, m_ctx);
-            if (!widgetState) {
-                return;
-            }
-
-            const bool isReadOnly = (widgetState == NK_WIDGET_DISABLED) || ((layout->flags & NK_WINDOW_ROM) != 0);
-            nk_input* in = isReadOnly ? nullptr : &m_ctx->input;
-
-            // Match Nuklear slider geometry (padding + optional inc/dec buttons).
-            struct nk_rect track = bounds;
-            track.x += sliderStyle->padding.x;
-            track.y += sliderStyle->padding.y;
-            track.h = NK_MAX(track.h, 2.0f * sliderStyle->padding.y) - 2.0f * sliderStyle->padding.y;
-            track.w = NK_MAX(track.w, 2.0f * sliderStyle->padding.x + sliderStyle->cursor_size.x) - 2.0f * sliderStyle->padding.x;
-
-            if (sliderStyle->show_buttons) {
-                const float buttonW = track.h;
-                track.x += buttonW + sliderStyle->spacing.x;
-                track.w -= (2.0f * buttonW + 2.0f * sliderStyle->spacing.x);
-            }
-
-            const bool leftDown = IsLeftMouseDown(m_ctx);
-            const bool leftPressed = WasLeftMousePressed(m_ctx);
-
-            if (!leftDown && g_sliderTrackDrag.active && g_sliderTrackDrag.valueRef == value) {
-                g_sliderTrackDrag = {};
-            }
-
-            if (in != nullptr && leftPressed && IsMouseInsideRect(m_ctx, track)) {
-                g_sliderTrackDrag.active = true;
-                g_sliderTrackDrag.valueRef = value;
-            }
-
-            const float sliderMin = std::min(min, max);
-            const float sliderMax = std::max(min, max);
-            const float safeStep = (step > 0.0f) ? step : 1.0f;
-
-            const bool draggingThisSlider =
-                (in != nullptr) && g_sliderTrackDrag.active && (g_sliderTrackDrag.valueRef == value) && leftDown;
-
-            if (draggingThisSlider) {
-                const float t = (track.w > 0.0f) ? ((m_ctx->input.mouse.pos.x - track.x) / track.w) : 0.0f;
-                float newValue = sliderMin + std::clamp(t, 0.0f, 1.0f) * (sliderMax - sliderMin);
-                newValue = sliderMin + std::round((newValue - sliderMin) / safeStep) * safeStep;
-                *value = std::clamp(newValue, sliderMin, sliderMax);
-            }
-
-            *value = std::clamp(*value, sliderMin, sliderMax);
-
-            const bool hovered = (in != nullptr) && IsMouseInsideRect(m_ctx, track);
-            const bool active = draggingThisSlider;
-            const nk_color barColor = active ? sliderStyle->bar_active : (hovered ? sliderStyle->bar_hover : sliderStyle->bar_normal);
-            const nk_style_item* cursorItem = active
-                ? &sliderStyle->cursor_active
-                : (hovered ? &sliderStyle->cursor_hover : &sliderStyle->cursor_normal);
-
-            struct nk_rect bar{};
-            bar.x = track.x;
-            bar.y = (track.y + track.h * 0.5f) - (sliderStyle->bar_height * 0.5f);
-            bar.w = track.w;
-            bar.h = sliderStyle->bar_height;
-
-            const float ratio = (sliderMax > sliderMin) ? ((*value - sliderMin) / (sliderMax - sliderMin)) : 0.0f;
-            const float clampedRatio = std::clamp(ratio, 0.0f, 1.0f);
-
-            struct nk_rect fill = bar;
-            fill.w *= clampedRatio;
-
-            struct nk_rect cursor{};
-            cursor.w = sliderStyle->cursor_size.x;
-            cursor.h = sliderStyle->cursor_size.y;
-            cursor.x = track.x + track.w * clampedRatio - cursor.w * 0.5f;
-            cursor.y = (track.y + track.h * 0.5f) - cursor.h * 0.5f;
-
-            nk_fill_rect(&win->buffer, bounds, sliderStyle->rounding, style->window.background);
-            nk_stroke_rect(&win->buffer, bounds, sliderStyle->rounding, sliderStyle->border, sliderStyle->border_color);
-            nk_fill_rect(&win->buffer, bar, sliderStyle->rounding, barColor);
-            nk_fill_rect(&win->buffer, fill, sliderStyle->rounding, sliderStyle->bar_filled);
-
-            if (cursorItem->type == NK_STYLE_ITEM_IMAGE) {
-                nk_draw_image(&win->buffer, cursor, &cursorItem->data.image, nk_rgb(255, 255, 255));
-            } else {
-                nk_fill_circle(&win->buffer, cursor, cursorItem->data.color);
-            }
-        }
-
-        bool button(const char* label) override {
-            nk_layout_row_dynamic(m_ctx, button_row_height(), 1);
-            return draw_custom_button(label != nullptr ? label : "");
-        }
-
-        void text_input(const char* label, char* buffer, size_t bufferSize) override {
-            nk_layout_row_dynamic(m_ctx, control_row_height(), 1);
-            nk_label(m_ctx, label, NK_TEXT_LEFT);
-            nk_layout_row_dynamic(m_ctx, control_row_height(), 1);
-            nk_edit_string_zero_terminated(m_ctx, NK_EDIT_FIELD, buffer,
-                                           static_cast<int>(bufferSize), nk_filter_default);
-        }
-
-        bool radio_button(const char* label, int* activeIndex, int value) override {
-            if (activeIndex == nullptr) {
-                // nothing to modify
-                return false;
-            }
-
-            // Use same row height as other controls
-            nk_layout_row_dynamic(m_ctx, control_row_height(), 1);
-
-            // Remember previous selection so we can detect a change
-            const int prev = *activeIndex;
-
-            // Nuklear draws the radio and its label together
-            // We call nk_radio_label which will set *activeIndex to 'value' when user selects it.
-            if (nk_option_label(m_ctx, label, static_cast<nk_bool>(*activeIndex == value))) {
-                *activeIndex = value;
-            }
-
-            return (*activeIndex != prev);
-        }
+        bool radio_button(const char* label, int* activeIndex, int value) override;
         
         uint32_t get_framebuffer_width() const override {
             return m_framebufferExtent.width;
@@ -1353,6 +1386,13 @@ namespace {
         };
         
     };
+
+    #include "ui/UIPainterPanel.inl"
+    #include "ui/UIPainterLayout.inl"
+    #include "ui/UIPainterSlider.inl"
+    #include "ui/UIPainterButton.inl"
+    #include "ui/UIPainterTextInput.inl"
+    #include "ui/UIPainterRadio.inl"
 
     bool IsDeviceSuitable(VkPhysicalDevice device) {
         uint32_t queueFamilyCount = 0;
@@ -1885,11 +1925,15 @@ namespace Spherical {
             return;
         }
 
+        DrawCenterMarkerOverlay(&ctx, framebufferExtent);
+
         // Call the registered UI build callback, or provide a default fallback
+        g_cursorState.requested = CursorRequest::Default;
         if (g_uiBuildCallback) {
             UIPainterImpl painter(&ctx, framebufferExtent);
             g_uiBuildCallback(painter);
         }
+        ApplyRequestedCursor();
 
         SyncWindowTextInputState(&ctx);
 
@@ -2230,6 +2274,9 @@ namespace Spherical {
         FontRenderer::Shutdown();
         VulkanRenderer::Shutdown();
         ShutdownBackend();
+        ShutdownCursors();
+        g_panelDrag = {};
+        g_panelStates.clear();
         g_uiBuildCallback = nullptr;  // Release lambda captures and prevent stale callbacks on re-init
         initialized = false;
     }

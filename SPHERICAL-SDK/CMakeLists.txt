@@ -76,6 +76,7 @@ target_include_directories(Spherical PUBLIC
 target_include_directories(Spherical PRIVATE src)  # For nuklear_config.h
 
 target_compile_definitions(Spherical PRIVATE
+        SPHERICAL_EXPORTS
         SPHERICAL_SHADER_DIR="${SPHERICAL_SHADER_OUTPUT_DIR}"
 )
 

@@ -1,4 +1,5 @@
 #include <iostream>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -10,6 +11,8 @@
 #include <SDL3/SDL.h>
 
 #include "SPHERICAL.h"
+#include "ui_style_scope.h"
+#include "ui_theme.h"
 
 #ifndef SPHERICAL_APP_VERSION
 #define SPHERICAL_APP_VERSION "dev"
@@ -23,17 +26,6 @@ namespace {
         float colorR = 0.5f;
         float colorG = 0.5f;
         float colorB = 0.5f;
-        float buttonHeight = 30.0f;
-        float buttonWidth = 200.0f;
-        float buttonCornerRadius = 0.0f;
-        float buttonBorderThickness = 1.0f;
-        Spherical::UIColor buttonBackgroundColor{0.92f, 0.92f, 0.92f, 1.0f};
-        Spherical::UIColor buttonHoverBackgroundColor{0.82f, 0.82f, 0.82f, 1.0f};
-        Spherical::UIColor buttonClickedBackgroundColor{0.72f, 0.72f, 0.72f, 1.0f};
-        Spherical::UIVec2 buttonPadding{12.0f, 7.0f};
-        Spherical::UIColor buttonHighlightColor{1.0f, 1.0f, 1.0f, 1.0f};
-        Spherical::UIColor buttonShadowColor{0.35f, 0.35f, 0.35f, 1.0f};
-        int buttonStyleMode = static_cast<int>(Spherical::ButtonStyle::Embossed);
         int clickCounter = 0;
         char textInput[128] = "";
         bool isLoadingProject = false;
@@ -72,7 +64,24 @@ namespace {
         }
     };
 
+    struct AppStyleOverrides {
+        float buttonHeight = 30.0f;
+        float buttonWidth = 200.0f;
+        float buttonCornerRadius = 0.0f;
+        float buttonBorderThickness = 1.0f;
+        Spherical::UIColor buttonBackgroundColor{0.92f, 0.92f, 0.92f, 1.0f};
+        Spherical::UIColor buttonHoverBackgroundColor{0.82f, 0.82f, 0.82f, 1.0f};
+        Spherical::UIColor buttonClickedBackgroundColor{0.72f, 0.72f, 0.72f, 1.0f};
+        Spherical::UIVec2 buttonPadding{12.0f, 7.0f};
+        Spherical::UIColor buttonHighlightColor{1.0f, 1.0f, 1.0f, 1.0f};
+        Spherical::UIColor buttonShadowColor{0.35f, 0.35f, 0.35f, 1.0f};
+        int buttonStyleMode = static_cast<int>(Spherical::ButtonStyle::Embossed);
+    };
+
     AppUIState g_appUI;
+    AppStyleOverrides g_styleOverrides;
+    AppTheme::ThemePresetId g_selectedThemePreset = AppTheme::ThemePresetId::ClassicLight;
+    AppTheme::UIStyle g_activeStyle;
 
     void EditColorRgb(Spherical::UIPainter& ui, const char* title, Spherical::UIColor& color) {
         ui.label(title);
@@ -86,9 +95,24 @@ namespace {
     }
 
     Spherical::ButtonStyle GetSelectedButtonStyle() {
-        return g_appUI.buttonStyleMode == static_cast<int>(Spherical::ButtonStyle::Embossed)
+        return g_styleOverrides.buttonStyleMode == static_cast<int>(Spherical::ButtonStyle::Embossed)
             ? Spherical::ButtonStyle::Embossed
             : Spherical::ButtonStyle::Flat;
+    }
+
+    void RebuildActiveStyle() {
+        g_activeStyle = AppTheme::GetThemePreset(g_selectedThemePreset).style;
+        g_activeStyle.buttonBackgroundColor = g_styleOverrides.buttonBackgroundColor;
+        g_activeStyle.buttonHoverBackgroundColor = g_styleOverrides.buttonHoverBackgroundColor;
+        g_activeStyle.buttonClickedBackgroundColor = g_styleOverrides.buttonClickedBackgroundColor;
+        g_activeStyle.buttonHeight = g_styleOverrides.buttonHeight;
+        g_activeStyle.buttonWidth = g_styleOverrides.buttonWidth;
+        g_activeStyle.buttonCornerRadius = g_styleOverrides.buttonCornerRadius;
+        g_activeStyle.buttonBorderThickness = g_styleOverrides.buttonBorderThickness;
+        g_activeStyle.buttonPadding = g_styleOverrides.buttonPadding;
+        g_activeStyle.buttonStyle = GetSelectedButtonStyle();
+        g_activeStyle.buttonHighlightColor = g_styleOverrides.buttonHighlightColor;
+        g_activeStyle.buttonShadowColor = g_styleOverrides.buttonShadowColor;
     }
 
     std::string ResolveAppFontPath() {
@@ -172,31 +196,14 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
     // Register the UI build callback BEFORE initialization
     Spherical::RegisterUI([](Spherical::UIPainter& ui) {
-        
-        ui.push_panel_body_color({1.0f, 1.0f, 1.0f, 1.0f});
-        ui.push_panel_title_bar_color({0.45f, 0.45f, 0.45f, 1.0f});
-        ui.push_panel_border_color({0.0f, 0.0f, 0.0f, 1.0f});
-        ui.push_panel_title_text_color({1.0f, 1.0f, 1.0f, 1.0f});
-        ui.push_text_color({0.05f, 0.05f, 0.05f, 1.0f});
-        ui.push_radio_button_text_color({0.05f, 0.05f, 0.05f, 1.0f});
-        ui.push_button_background_color(g_appUI.buttonBackgroundColor);
-        ui.push_button_hover_background_color(g_appUI.buttonHoverBackgroundColor);
-        ui.push_button_clicked_background_color(g_appUI.buttonClickedBackgroundColor);
-        ui.push_button_height(g_appUI.buttonHeight);
-        ui.push_button_width(g_appUI.buttonWidth);
-        ui.push_button_corner_radius(g_appUI.buttonCornerRadius);
-        ui.push_button_border_thickness(g_appUI.buttonBorderThickness);
-        ui.push_button_padding(g_appUI.buttonPadding);
-        ui.push_button_style(GetSelectedButtonStyle());
-        ui.push_button_highlight_color(g_appUI.buttonHighlightColor);
-        ui.push_button_shadow_color(g_appUI.buttonShadowColor);
-        ui.push_button_border_color({0.0f, 0.0f, 0.0f, 1.0f});
-        ui.push_button_text_color({0.0f, 0.0f, 0.0f, 1.0f});
-        ui.push_text_input_background_color({1.0f, 1.0f, 1.0f, 1.0f});
-        ui.push_text_input_text_color({0.0f, 0.0f, 0.0f, 1.0f});
+        RebuildActiveStyle();
+        AppTheme::ScopedUIStyle panelScope(ui, g_activeStyle);
                 
         // New Panel Start
         if (ui.begin_panel("Control Panel", 20, 20, 650, 1250)) {
+            const Spherical::UIRect panelBounds = ui.get_current_panel_bounds();
+            const Spherical::UIRect panelContentBounds = ui.get_current_panel_content_bounds();
+            const float responsiveButtonWidth = std::clamp(panelContentBounds.w * 0.42f, 180.0f, 360.0f);
             
             ui.push_font(Spherical::FontStyle::Title);
             ui.label("SPHERICAL Interactive Control Panel");
@@ -204,9 +211,11 @@ int main(int /*argc*/, char* /*argv*/[]) {
             
             ui.label("This uses the regular font style.");
             ui.spacing();
+            ui.push_button_width(responsiveButtonWidth);
             if (ui.button(g_appUI.newButtonToggled ? "New Button (ON)" : "New Button (OFF)")) {
                 g_appUI.newButtonToggled = !g_appUI.newButtonToggled;
             }
+            ui.pop_button_width();
             
             {
                 char status_label[64];
@@ -254,6 +263,12 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 ui.label(window_label);
             }
 
+            {
+                char panel_label[96];
+                snprintf(panel_label, sizeof(panel_label), "Panel: %.0fx%.0f", panelBounds.w, panelBounds.h);
+                ui.label(panel_label);
+            }
+
             ui.spacing();
 
             // Color sliders
@@ -270,49 +285,80 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
             ui.spacing();
 
+            ui.label("Theme Preset");
+            int selectedTheme = static_cast<int>(g_selectedThemePreset);
+            ui.radio_button("Classic Light", &selectedTheme, static_cast<int>(AppTheme::ThemePresetId::ClassicLight));
+            ui.radio_button("Midnight Dark", &selectedTheme, static_cast<int>(AppTheme::ThemePresetId::MidnightDark));
+            ui.radio_button("Deep Ocean Blue", &selectedTheme, static_cast<int>(AppTheme::ThemePresetId::DeepOceanBlue));
+
+            switch (static_cast<AppTheme::ThemePresetId>(selectedTheme)) {
+                case AppTheme::ThemePresetId::ClassicLight:
+                    g_selectedThemePreset = AppTheme::ThemePresetId::ClassicLight;
+                    break;
+                case AppTheme::ThemePresetId::MidnightDark:
+                    g_selectedThemePreset = AppTheme::ThemePresetId::MidnightDark;
+                    break;
+                case AppTheme::ThemePresetId::DeepOceanBlue:
+                    g_selectedThemePreset = AppTheme::ThemePresetId::DeepOceanBlue;
+                    break;
+                default:
+                    g_selectedThemePreset = AppTheme::ThemePresetId::ClassicLight;
+                    break;
+            }
+
+            ui.spacing();
+
             ui.push_font(Spherical::FontStyle::Title);
             ui.label("Button Theme Colors");
             ui.pop_font();
 
-            ui.label("Button Style");
-            ui.radio_button("Flat", &g_appUI.buttonStyleMode, static_cast<int>(Spherical::ButtonStyle::Flat));
-            ui.radio_button("Embossed", &g_appUI.buttonStyleMode, static_cast<int>(Spherical::ButtonStyle::Embossed));
-            ui.spacing();
-
-            ui.slider_float("Button Height", &g_appUI.buttonHeight, 20.0f, 64.0f, 1.0f);
-            ui.slider_float("Button Width", &g_appUI.buttonWidth, 0.0f, 360.0f, 1.0f);
-            ui.slider_float("Corner Radius", &g_appUI.buttonCornerRadius, 0.0f, 16.0f, 0.5f);
-            ui.slider_float("Border Thickness", &g_appUI.buttonBorderThickness, 0.0f, 6.0f, 0.5f);
-            ui.slider_float("Padding X", &g_appUI.buttonPadding.x, 0.0f, 24.0f, 1.0f);
-            ui.slider_float("Padding Y", &g_appUI.buttonPadding.y, 0.0f, 24.0f, 1.0f);
-
             {
-                char widthLabel[96];
-                if (g_appUI.buttonWidth <= 0.0f) {
-                    snprintf(widthLabel, sizeof(widthLabel), "Button Width: Full row width");
-                } else {
-                    snprintf(widthLabel, sizeof(widthLabel), "Button Width: %.0f px (centered)", g_appUI.buttonWidth);
-                }
-                ui.label(widthLabel);
-            }
-            ui.spacing();
+                // Keep theme tuning scoped so section-level overrides can be added safely later.
+                AppTheme::UIStyle sectionStyle = g_activeStyle;
+                AppTheme::ScopedUIStyle sectionScope(ui, sectionStyle);
 
-            EditColorRgb(ui, "Button Normal Background", g_appUI.buttonBackgroundColor);
-            ui.spacing();
-            EditColorRgb(ui, "Button Hover Background", g_appUI.buttonHoverBackgroundColor);
-            ui.spacing();
-            EditColorRgb(ui, "Button Clicked Background", g_appUI.buttonClickedBackgroundColor);
-            ui.spacing();
-            EditColorRgb(ui, "Button Bevel Highlight", g_appUI.buttonHighlightColor);
-            ui.spacing();
-            EditColorRgb(ui, "Button Bevel Shadow", g_appUI.buttonShadowColor);
+                ui.label("Button Style");
+                ui.radio_button("Flat", &g_styleOverrides.buttonStyleMode, static_cast<int>(Spherical::ButtonStyle::Flat));
+                ui.radio_button("Embossed", &g_styleOverrides.buttonStyleMode, static_cast<int>(Spherical::ButtonStyle::Embossed));
+                ui.spacing();
+
+                ui.slider_float("Button Height", &g_styleOverrides.buttonHeight, 20.0f, 64.0f, 1.0f);
+                ui.slider_float("Button Width", &g_styleOverrides.buttonWidth, 0.0f, 360.0f, 1.0f);
+                ui.slider_float("Corner Radius", &g_styleOverrides.buttonCornerRadius, 0.0f, 16.0f, 0.5f);
+                ui.slider_float("Border Thickness", &g_styleOverrides.buttonBorderThickness, 0.0f, 6.0f, 0.5f);
+                ui.slider_float("Padding X", &g_styleOverrides.buttonPadding.x, 0.0f, 24.0f, 1.0f);
+                ui.slider_float("Padding Y", &g_styleOverrides.buttonPadding.y, 0.0f, 24.0f, 1.0f);
+
+                {
+                    char widthLabel[96];
+                    if (g_styleOverrides.buttonWidth <= 0.0f) {
+                        snprintf(widthLabel, sizeof(widthLabel), "Button Width: Full row width");
+                    } else {
+                        snprintf(widthLabel, sizeof(widthLabel), "Button Width: %.0f px (centered)", g_styleOverrides.buttonWidth);
+                    }
+                    ui.label(widthLabel);
+                }
+                ui.spacing();
+
+                EditColorRgb(ui, "Button Normal Background", g_styleOverrides.buttonBackgroundColor);
+                ui.spacing();
+                EditColorRgb(ui, "Button Hover Background", g_styleOverrides.buttonHoverBackgroundColor);
+                ui.spacing();
+                EditColorRgb(ui, "Button Clicked Background", g_styleOverrides.buttonClickedBackgroundColor);
+                ui.spacing();
+                EditColorRgb(ui, "Button Bevel Highlight", g_styleOverrides.buttonHighlightColor);
+                ui.spacing();
+                EditColorRgb(ui, "Button Bevel Shadow", g_styleOverrides.buttonShadowColor);
+            }
 
             ui.spacing();
 
             // Click counter button
+            ui.push_button_width(responsiveButtonWidth);
             if (ui.button("Click Me")) {
                 g_appUI.clickCounter++;
             }
+            ui.pop_button_width();
 
             {
                 char click_label[64];
@@ -334,6 +380,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
             ui.spacing();
 
             // Load project button
+            ui.push_button_width(responsiveButtonWidth);
             if (ui.button(!g_appUI.isLoadingProject ? "Load Project" : "Loading...")) {
                 if (!g_appUI.isLoadingProject) {
                     g_appUI.isLoadingProject = true;
@@ -341,6 +388,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
                     // TODO: Trigger async task via Spherical::TaskRunner in future
                 }
             }
+            ui.pop_button_width();
 
             {
                 char load_label[64];
@@ -359,28 +407,6 @@ int main(int /*argc*/, char* /*argv*/[]) {
                         
         }
         ui.end_panel();  // Always call end_panel() — required even if begin_panel() returned false
-        
-        ui.pop_text_input_text_color();
-        ui.pop_text_input_background_color();
-        ui.pop_button_text_color();
-        ui.pop_button_border_color();
-        ui.pop_button_shadow_color();
-        ui.pop_button_highlight_color();
-        ui.pop_button_style();
-        ui.pop_button_padding();
-        ui.pop_button_border_thickness();
-        ui.pop_button_corner_radius();
-        ui.pop_button_width();
-        ui.pop_button_height();
-        ui.pop_button_clicked_background_color();
-        ui.pop_button_hover_background_color();
-        ui.pop_button_background_color();
-        ui.pop_radio_button_text_color();
-        ui.pop_text_color();
-        ui.pop_panel_title_text_color();
-        ui.pop_panel_border_color();
-        ui.pop_panel_title_bar_color();
-        ui.pop_panel_body_color();
     });
 
     const std::string fontPath = ResolveAppFontPath();
