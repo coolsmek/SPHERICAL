@@ -33,24 +33,24 @@ namespace Spherical {
      * @param info Initialization parameters
      * @return true if initialization succeeded, false otherwise
      */
-    bool Init(const SphericalInitInfo& info);
+    SPHERICAL_API bool Init(const SphericalInitInfo& info);
     
     /**
      * @brief Begin a new frame, process input
      * @note Safe to call even if Init() has not been called
      */
-    void NewFrame();
+    SPHERICAL_API void NewFrame();
     
     /**
      * @brief Render the UI (SDK owns acquire/submit/present internally)
      * @note Safe to call even if Init() has not been called
      */
-    void Render();
+    SPHERICAL_API void Render();
     
     /**
      * @brief Shutdown and cleanup resources
      * @note Safe to call multiple times
      */
-    void Shutdown();
+    SPHERICAL_API void Shutdown();
 
 }

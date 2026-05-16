@@ -10,6 +10,16 @@
 
 #include <functional>
 
+#if defined(_WIN32)
+#  if defined(SPHERICAL_EXPORTS)
+#    define SPHERICAL_API __declspec(dllexport)
+#  else
+#    define SPHERICAL_API __declspec(dllimport)
+#  endif
+#else
+#  define SPHERICAL_API
+#endif
+
 
 
 namespace Spherical {
@@ -24,6 +34,13 @@ namespace Spherical {
     struct UIVec2 {
         float x = 0.0f;
         float y = 0.0f;
+    };
+
+    struct UIRect {
+        float x = 0.0f;
+        float y = 0.0f;
+        float w = 0.0f;
+        float h = 0.0f;
     };
 
     enum class ButtonStyle {
@@ -406,6 +423,18 @@ namespace Spherical {
          * @brief Pop the last text input typing text color override.
          */
         virtual void pop_text_input_text_color() = 0;
+
+        /**
+         * @brief Get the current panel bounds for the active panel.
+         * @note Valid between a successful begin_panel() and the matching end_panel().
+         */
+        virtual UIRect get_current_panel_bounds() const = 0;
+
+        /**
+         * @brief Get the current panel content bounds for the active panel.
+         * @note Valid between a successful begin_panel() and the matching end_panel().
+         */
+        virtual UIRect get_current_panel_content_bounds() const = 0;
     };
 
     /**
@@ -438,7 +467,7 @@ namespace Spherical {
      *   });
      * @endcode
      */
-    void RegisterUI(const UIBuildFn& callback);
+    SPHERICAL_API void RegisterUI(const UIBuildFn& callback);
 
 } // namespace Spherical
 
