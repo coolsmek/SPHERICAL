@@ -7,7 +7,8 @@ namespace AppTheme {
 enum class ThemePresetId {
     ClassicLight = 0,
     MidnightDark = 1,
-    DeepOceanBlue = 2
+    DeepOceanBlue = 2,
+    NeoGreen = 3
 };
 
 struct UIStyle {

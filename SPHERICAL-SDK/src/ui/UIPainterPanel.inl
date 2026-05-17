@@ -1,4 +1,6 @@
 bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int height) {
+    m_panelSubsectionStack.clear();
+
     if (m_ctx == nullptr || title == nullptr) {
         m_currentPanelBounds = {};
         m_currentPanelContentBounds = {};
@@ -43,37 +45,117 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
         panelState.height = std::max(kMinHeight, static_cast<float>(height));
         panelState.offsetFromCenterX = static_cast<float>(x) - centerX;
         panelState.offsetFromCenterY = static_cast<float>(y) - centerY;
+        panelState.initialWidth = panelState.width;
+        panelState.initialHeight = panelState.height;
+        panelState.initialOffsetFromCenterX = panelState.offsetFromCenterX;
+        panelState.initialOffsetFromCenterY = panelState.offsetFromCenterY;
         panelState.initialized = true;
     }
 
     struct nk_rect panelBounds = bounds_from_state(panelState);
 
+    // Check if this panel is docked in a workspace container
+    bool isPanelDocked = false;
+    for (auto& [containerTitle, containerState] : g_workspaceContainerStates) {
+        if (containerState.root == nullptr) {
+            continue;
+        }
+        DockNode* leafNode = FindDockNodeByPanelTitle(containerState.root.get(), title);
+        if (leafNode != nullptr) {
+            // Panel is docked - inset its rect so splitter lines remain visible between docked panels.
+            panelBounds = InsetDockedPanelRect(leafNode->computedRect);
+            isPanelDocked = true;
+            break;
+        }
+    }
+
     if (g_panelDrag.active && g_panelDrag.windowTitle == title) {
-        if (!IsLeftMouseDown(m_ctx)) {
+        if (isPanelDocked && g_panelDrag.mode != PanelDragMode::Move) {
             g_panelDrag = {};
-        } else {
-            const bool isResizeDrag = g_panelDrag.mode != PanelDragMode::Move && g_panelDrag.mode != PanelDragMode::None;
-            const float mouseX = m_ctx->input.mouse.pos.x;
-            const float mouseY = m_ctx->input.mouse.pos.y;
-            const bool mouseInsideWindow = mouseX >= 0.0f && mouseX <= static_cast<float>(m_framebufferExtent.width) &&
-                                           mouseY >= 0.0f && mouseY <= static_cast<float>(m_framebufferExtent.height);
+            SDL_CaptureMouse(false);
+        }
 
-            if (!isResizeDrag || mouseInsideWindow) {
-                float dx = 0.0f;
-                float dy = 0.0f;
-                if (g_panelDrag.mode == PanelDragMode::Move) {
-                    float globalX = 0.0f;
-                    float globalY = 0.0f;
-                    SDL_GetGlobalMouseState(&globalX, &globalY);
-                    dx = globalX - g_panelDrag.globalMouseStartX;
-                    dy = globalY - g_panelDrag.globalMouseStartY;
-                } else {
-                    dx = m_ctx->input.mouse.pos.x - g_panelDrag.mouseStartX;
-                    dy = m_ctx->input.mouse.pos.y - g_panelDrag.mouseStartY;
+        if (!IsLeftMouseDownAnywhere(m_ctx)) {
+            // Mouse released - check for drop into workspace container
+            if (g_panelDrag.mode == PanelDragMode::Move && g_dropTargetState.active) {
+                auto it = g_workspaceContainerStates.find(g_dropTargetState.containerTitle);
+                if (it != g_workspaceContainerStates.end()) {
+                    if (it->second.root == nullptr) {
+                        auto newLeaf = std::make_unique<DockNode>();
+                        newLeaf->type = DockNode::Type::Leaf;
+                        newLeaf->panelTitle = title;
+                        it->second.root = std::move(newLeaf);
+                        it->second.pendingSplitterReconcile = true;
+                    } else if (g_dropTargetState.hoveredLeaf != nullptr) {
+                        InsertDockNode(it->second.root, &it->second, g_dropTargetState.hoveredLeaf, title, g_dropTargetState.zone);
+                    }
                 }
+            }
+            g_dropTargetState = {};
+            g_panelDrag = {};
+            SDL_CaptureMouse(false);
+        } else {
+            // Drag is active - detect workspace container drops
+            if (g_panelDrag.mode == PanelDragMode::Move && !isPanelDocked) {
+                const float mouseX = m_ctx->input.mouse.pos.x;
+                const float mouseY = m_ctx->input.mouse.pos.y;
 
-                struct nk_rect nextBounds = g_panelDrag.panelStartBounds;
-                switch (g_panelDrag.mode) {
+                // Check all workspace containers for overlap
+                g_dropTargetState.active = false;
+                g_dropTargetState.hoveredLeaf = nullptr;
+                for (auto& [containerName, containerState] : g_workspaceContainerStates) {
+                    if (!containerState.initialized) {
+                        continue;
+                    }
+
+                    struct nk_rect containerBounds = nk_rect(
+                        centerX + containerState.offsetFromCenterX,
+                        centerY + containerState.offsetFromCenterY,
+                        containerState.width,
+                        containerState.height
+                    );
+
+                    const float headerHeight = containerState.headerHeight > 0.0f
+                        ? containerState.headerHeight
+                        : GetWindowHeaderHeight(m_ctx);
+                    struct nk_rect bodyRect = containerBounds;
+                    bodyRect.y += headerHeight;
+                    bodyRect.h = std::max(0.0f, bodyRect.h - headerHeight);
+
+                    if (bodyRect.w <= 0.0f || bodyRect.h <= 0.0f ||
+                        mouseX < bodyRect.x || mouseX > bodyRect.x + bodyRect.w ||
+                        mouseY < bodyRect.y || mouseY > bodyRect.y + bodyRect.h) {
+                        continue; // Not over this container
+                    }
+
+                    if (containerState.root == nullptr) {
+                        g_dropTargetState.active = true;
+                        g_dropTargetState.containerTitle = containerName;
+                        g_dropTargetState.hoveredLeaf = nullptr;
+                        g_dropTargetState.zone = DropTargetState::DropZone::Center;
+                        break; // Stop checking other containers
+                    }
+
+                    DockNode* leaf = FindLeafAtPoint(containerState.root.get(), mouseX, mouseY);
+                    if (leaf != nullptr && leaf->type == DockNode::Type::Leaf) {
+                        DropTargetState::DropZone zone = DetermineDropZone(leaf->computedRect, mouseX, mouseY);
+                        g_dropTargetState.active = true;
+                        g_dropTargetState.containerTitle = containerName;
+                        g_dropTargetState.hoveredLeaf = leaf;
+                        g_dropTargetState.zone = zone;
+                        break; // Stop checking other containers
+                    }
+                }
+            }
+
+            float globalX = 0.0f;
+            float globalY = 0.0f;
+            SDL_GetGlobalMouseState(&globalX, &globalY);
+            const float dx = globalX - g_panelDrag.globalMouseStartX;
+            const float dy = globalY - g_panelDrag.globalMouseStartY;
+
+            struct nk_rect nextBounds = g_panelDrag.panelStartBounds;
+            switch (g_panelDrag.mode) {
                     case PanelDragMode::Move:
                         nextBounds.x = g_panelDrag.panelStartBounds.x + dx;
                         nextBounds.y = g_panelDrag.panelStartBounds.y + dy;
@@ -112,36 +194,37 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
                         nextBounds.x = g_panelDrag.panelStartBounds.x + dx;
                         nextBounds.w = g_panelDrag.panelStartBounds.w - dx;
                         break;
-                    case PanelDragMode::None:
-                    default:
-                        break;
-                }
-
-                if (nextBounds.w < kMinWidth) {
-                    if (g_panelDrag.mode == PanelDragMode::ResizeTopLeft || g_panelDrag.mode == PanelDragMode::ResizeBottomLeft ||
-                        g_panelDrag.mode == PanelDragMode::ResizeLeft) {
-                        nextBounds.x = g_panelDrag.panelStartBounds.x + (g_panelDrag.panelStartBounds.w - kMinWidth);
-                    }
-                    nextBounds.w = kMinWidth;
-                }
-
-                if (nextBounds.h < kMinHeight) {
-                    if (g_panelDrag.mode == PanelDragMode::ResizeTopLeft || g_panelDrag.mode == PanelDragMode::ResizeTopRight ||
-                        g_panelDrag.mode == PanelDragMode::ResizeTop) {
-                        nextBounds.y = g_panelDrag.panelStartBounds.y + (g_panelDrag.panelStartBounds.h - kMinHeight);
-                    }
-                    nextBounds.h = kMinHeight;
-                }
-
-                clamp_bounds(nextBounds);
-                panelBounds = nextBounds;
-                write_state_from_bounds(panelState, panelBounds);
+                case PanelDragMode::None:
+                default:
+                    break;
             }
+
+            if (nextBounds.w < kMinWidth) {
+                if (g_panelDrag.mode == PanelDragMode::ResizeTopLeft || g_panelDrag.mode == PanelDragMode::ResizeBottomLeft ||
+                    g_panelDrag.mode == PanelDragMode::ResizeLeft) {
+                    nextBounds.x = g_panelDrag.panelStartBounds.x + (g_panelDrag.panelStartBounds.w - kMinWidth);
+                }
+                nextBounds.w = kMinWidth;
+            }
+
+            if (nextBounds.h < kMinHeight) {
+                if (g_panelDrag.mode == PanelDragMode::ResizeTopLeft || g_panelDrag.mode == PanelDragMode::ResizeTopRight ||
+                    g_panelDrag.mode == PanelDragMode::ResizeTop) {
+                    nextBounds.y = g_panelDrag.panelStartBounds.y + (g_panelDrag.panelStartBounds.h - kMinHeight);
+                }
+                nextBounds.h = kMinHeight;
+            }
+
+            clamp_bounds(nextBounds);
+            panelBounds = nextBounds;
+            write_state_from_bounds(panelState, panelBounds);
         }
     }
 
-    clamp_bounds(panelBounds);
-    write_state_from_bounds(panelState, panelBounds);
+    if (!isPanelDocked) {
+        clamp_bounds(panelBounds);
+        write_state_from_bounds(panelState, panelBounds);
+    }
 
     const nk_user_font* titleFont = Spherical::FontRenderer::GetFontHandle(Spherical::FontStyle::Title);
     if (titleFont == nullptr) {
@@ -152,11 +235,12 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
         nk_style_push_font(m_ctx, titleFont);
     }
 
+    const nk_flags panelFlags = (isPanelDocked ? 0 : NK_WINDOW_BORDER) | NK_WINDOW_TITLE;
     const bool result = nk_begin(
         m_ctx,
         title,
         panelBounds,
-        NK_WINDOW_BORDER | NK_WINDOW_TITLE) != 0;
+        panelFlags) != 0;
     if (pushedTitleFont) {
         nk_style_pop_font(m_ctx);
     }
@@ -165,13 +249,66 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
         const struct nk_rect windowBounds = nk_window_get_bounds(m_ctx);
         const struct nk_rect contentRegion = nk_window_get_content_region(m_ctx);
         panelBounds = windowBounds;
-        write_state_from_bounds(panelState, panelBounds);
+        if (!isPanelDocked) {
+            write_state_from_bounds(panelState, panelBounds);
+        }
         m_currentPanelBounds = {windowBounds.x, windowBounds.y, windowBounds.w, windowBounds.h};
         m_currentPanelContentBounds = {contentRegion.x, contentRegion.y, contentRegion.w, contentRegion.h};
 
-        const float headerH = GetWindowHeaderHeight(m_ctx);
+        float headerH = contentRegion.y - windowBounds.y;
+        if (headerH <= 0.0f) {
+            headerH = GetWindowHeaderHeight(m_ctx, titleFont);
+        } else {
+            headerH += 1.0f;
+        }
         const struct nk_rect headerRect = nk_rect(windowBounds.x, windowBounds.y, windowBounds.w, headerH);
         const struct nk_rect topLeft = nk_rect(windowBounds.x, windowBounds.y, kCornerHandleSize, kCornerHandleSize);
+
+        // Render undock button if panel is docked
+        const float undockButtonDiameter = 16.0f;
+        struct nk_rect undockButtonRect = nk_rect(
+            windowBounds.x + windowBounds.w - undockButtonDiameter - 8.0f,
+            windowBounds.y + std::max(2.0f, (headerH - undockButtonDiameter) * 0.5f),
+            undockButtonDiameter,
+            undockButtonDiameter
+        );
+
+        if (isPanelDocked && m_ctx->current != nullptr) {
+            nk_command_buffer* buffer = &m_ctx->current->buffer;
+            const bool undockButtonHovered = IsMouseInsideRect(m_ctx, undockButtonRect);
+            const nk_color undockButtonColor = undockButtonHovered ? nk_rgb(245, 88, 88) : nk_rgb(230, 60, 60);
+            const nk_color undockButtonBorder = nk_rgb(255, 230, 230);
+            const float crossInset = 4.5f;
+
+            nk_push_scissor(buffer, windowBounds);
+            nk_fill_circle(buffer, undockButtonRect, undockButtonColor);
+            nk_stroke_circle(buffer, undockButtonRect, 1.5f, undockButtonBorder);
+            nk_stroke_line(
+                buffer,
+                undockButtonRect.x + crossInset,
+                undockButtonRect.y + crossInset,
+                undockButtonRect.x + undockButtonRect.w - crossInset,
+                undockButtonRect.y + undockButtonRect.h - crossInset,
+                1.5f,
+                nk_rgb(255, 255, 255)
+            );
+            nk_stroke_line(
+                buffer,
+                undockButtonRect.x + undockButtonRect.w - crossInset,
+                undockButtonRect.y + crossInset,
+                undockButtonRect.x + crossInset,
+                undockButtonRect.y + undockButtonRect.h - crossInset,
+                1.5f,
+                nk_rgb(255, 255, 255)
+            );
+            nk_push_scissor(buffer, contentRegion);
+
+            if (WasLeftMousePressed(m_ctx) && IsMouseInsideRect(m_ctx, undockButtonRect)) {
+                undock_panel_from_workspace(title);
+                m_ctx->input.mouse.buttons[NK_BUTTON_LEFT].clicked = 0;
+            }
+        }
+
         const struct nk_rect topRight = nk_rect(windowBounds.x + windowBounds.w - kCornerHandleSize, windowBounds.y, kCornerHandleSize, kCornerHandleSize);
         const struct nk_rect bottomLeft = nk_rect(windowBounds.x, windowBounds.y + windowBounds.h - kCornerHandleSize, kCornerHandleSize, kCornerHandleSize);
         const struct nk_rect bottomRight = nk_rect(windowBounds.x + windowBounds.w - kCornerHandleSize, windowBounds.y + windowBounds.h - kCornerHandleSize, kCornerHandleSize, kCornerHandleSize);
@@ -180,7 +317,7 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
         const struct nk_rect edgeBottom = nk_rect(windowBounds.x + kCornerHandleSize, windowBounds.y + windowBounds.h - kEdgeHandleThickness, std::max(0.0f, windowBounds.w - 2.0f * kCornerHandleSize), kEdgeHandleThickness);
         const struct nk_rect edgeLeft = nk_rect(windowBounds.x, windowBounds.y + kCornerHandleSize, kEdgeHandleThickness, std::max(0.0f, windowBounds.h - 2.0f * kCornerHandleSize));
 
-        if (g_panelDrag.active && g_panelDrag.windowTitle == title) {
+        if (!isPanelDocked && g_panelDrag.active && g_panelDrag.windowTitle == title) {
             switch (g_panelDrag.mode) {
                 case PanelDragMode::ResizeTopLeft:
                 case PanelDragMode::ResizeBottomRight:
@@ -203,7 +340,7 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
                 default:
                     break;
             }
-        } else {
+        } else if (!isPanelDocked) {
             if (IsMouseInsideRect(m_ctx, topLeft) || IsMouseInsideRect(m_ctx, bottomRight)) {
                 RequestCursor(CursorRequest::ResizeNwse);
             } else if (IsMouseInsideRect(m_ctx, topRight) || IsMouseInsideRect(m_ctx, bottomLeft)) {
@@ -215,7 +352,8 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
             }
         }
 
-        if (!g_panelDrag.active && WasLeftMousePressed(m_ctx)) {
+        // Don't allow independent move/resize drags for docked panels
+        if (!g_panelDrag.active && !isPanelDocked && WasLeftMousePressed(m_ctx)) {
             PanelDragMode startMode = PanelDragMode::None;
             if (IsMouseInsideRect(m_ctx, topLeft)) {
                 startMode = PanelDragMode::ResizeTopLeft;
@@ -249,11 +387,12 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
                 SDL_GetGlobalMouseState(&globalX, &globalY);
                 g_panelDrag.globalMouseStartX = globalX;
                 g_panelDrag.globalMouseStartY = globalY;
+                SDL_CaptureMouse(true);
                 m_ctx->input.mouse.buttons[NK_BUTTON_LEFT].clicked = 0;
             }
         }
 
-        if (m_ctx->current != nullptr) {
+        if (!isPanelDocked && m_ctx->current != nullptr) {
             const nk_color grip = m_ctx->style.window.border_color;
             nk_command_buffer* buffer = &m_ctx->current->buffer;
             nk_fill_rect(buffer, topLeft, 0.0f, grip);
@@ -266,8 +405,9 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
     } else {
         m_currentPanelBounds = {};
         m_currentPanelContentBounds = {};
-        if (g_panelDrag.active && g_panelDrag.windowTitle == title && !IsLeftMouseDown(m_ctx)) {
+        if (g_panelDrag.active && g_panelDrag.windowTitle == title && !IsLeftMouseDownAnywhere(m_ctx)) {
             g_panelDrag = {};
+            SDL_CaptureMouse(false);
         }
     }
 
@@ -283,8 +423,52 @@ void UIPainterImpl::end_panel() {
     if (m_activePanelTitle != nullptr) {
         // Refresh drag geometry and detect drag-start after content layout is known for this frame.
         refresh_vertical_scrollbar_drag_state(m_activePanelTitle);
+
+        if (m_ctx != nullptr && m_ctx->current != nullptr) {
+            DockNode* dockedContainerRoot = nullptr;
+            std::string dockedContainerTitle;
+            for (auto& [containerTitle, containerState] : g_workspaceContainerStates) {
+                if (containerState.root == nullptr) {
+                    continue;
+                }
+
+                if (FindDockNodeByPanelTitle(containerState.root.get(), m_activePanelTitle) != nullptr) {
+                    dockedContainerRoot = containerState.root.get();
+                    dockedContainerTitle = containerTitle;
+                    break;
+                }
+            }
+
+            if (dockedContainerRoot != nullptr) {
+                const DockSplitterHit hoveredHit = FindDockSplitterAtPoint(
+                    dockedContainerRoot,
+                    m_ctx->input.mouse.pos.x,
+                    m_ctx->input.mouse.pos.y,
+                    2.0f,
+                    10.0f
+                );
+
+                DrawDockSplitLinesForClipRect(
+                    &m_ctx->current->buffer,
+                    dockedContainerRoot,
+                    nk_rect(
+                        m_currentPanelBounds.x,
+                        m_currentPanelBounds.y,
+                        m_currentPanelBounds.w,
+                        m_currentPanelBounds.h
+                    ),
+                    (g_splitterDrag.containerTitle == dockedContainerTitle)
+                        ? DockSplitterHit{g_splitterDrag.splitNode, g_splitterDrag.boundaryIndex, {}, {}}
+                        : DockSplitterHit{},
+                    hoveredHit.node
+                        ? hoveredHit
+                        : DockSplitterHit{}
+                );
+            }
+        }
     }
     nk_end(m_ctx);
+    m_panelSubsectionStack.clear();
     m_activePanelTitle = nullptr;
 }
 

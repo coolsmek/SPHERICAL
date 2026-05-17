@@ -56,6 +56,17 @@ endif()
 add_library(Spherical ${SPHERICAL_LIBRARY_TYPE}
         src/NuklearImpl.cpp
         src/SPHERICAL.cpp
+        src/backend/SphericalBackendOps.cpp
+        src/runtime/SphericalRuntimeOps.cpp
+        src/runtime/SphericalRuntimeState.cpp
+        src/runtime/SphericalLifecycleOps.cpp
+        src/docking/DockModelBridge.cpp
+        src/docking/DockTreePrimitives.cpp
+        src/docking/DockSplitterOps.cpp
+        src/docking/DockLayoutOps.cpp
+        src/docking/DockReconcileOps.cpp
+        src/docking/DockMutationOps.cpp
+        src/docking/DockOverlayOps.cpp
         src/VulkanRenderer.cpp
         src/FontRenderer.cpp
         src/TaskRunner.cpp

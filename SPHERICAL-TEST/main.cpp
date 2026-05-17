@@ -5,7 +5,6 @@
 #include <cstdio>
 #include <array>
 #include <fstream>
-#include <nuklear.h>
 #include <string>
 #include <vector>
 #include <SDL3/SDL.h>
@@ -19,6 +18,8 @@
 #endif
 
 namespace {
+    constexpr const char* kWorkspaceContainerTitle = "Workspace Container Demo";
+
     std::atomic_bool g_shouldQuit = false;
     
     // App-owned UI state
@@ -40,6 +41,9 @@ namespace {
         
         //New Button - toggleable
         bool newButtonToggled = false;
+        
+        //use alternate font
+        bool altFont = false;
         
         double GetFPS() const {
             double totalMs = 0;
@@ -114,9 +118,14 @@ namespace {
         g_activeStyle.buttonHighlightColor = g_styleOverrides.buttonHighlightColor;
         g_activeStyle.buttonShadowColor = g_styleOverrides.buttonShadowColor;
     }
-
-    std::string ResolveAppFontPath() {
-        std::vector<std::string> fontCandidates = {
+//bool altFont = false;
+    
+    std::string ResolveAppFontPath()
+    {
+        std::vector<std::string> fontCandidates;
+        
+        if (!g_appUI.altFont) {
+            fontCandidates= {
             "SPHERICAL-TEST/fonts/Arimo/Arimo-Regular.ttf",
             "fonts/Arimo/Arimo-Regular.ttf"
         };
@@ -129,23 +138,21 @@ namespace {
                 basePath + "../../../SPHERICAL-TEST/fonts/Arimo/Arimo-Regular.ttf"
             });
         }
-        /*
-        std::string ResolveAppFontPath() {
-            std::vector<std::string> fontCandidates = {
-                "SPHERICAL-TEST/fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf",
-                "fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf"
-            };
+    } else {
+        fontCandidates= {
+                    "SPHERICAL-TEST/fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf",
+                    "fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf"
+                };
 
-            if (const char* basePathRaw = SDL_GetBasePath()) {
-                const std::string basePath(basePathRaw);
-                fontCandidates.insert(fontCandidates.begin(), {
-                    basePath + "fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf",
-                    basePath + "../fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf",
-                    basePath + "../../../SPHERICAL-TEST/fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf"
-                });
+                if (const char* basePathRaw = SDL_GetBasePath()) {
+                    const std::string basePath(basePathRaw);
+                    fontCandidates.insert(fontCandidates.begin(), {
+                        basePath + "fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf",
+                        basePath + "../fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf",
+                        basePath + "../../../SPHERICAL-TEST/fonts/Inconsolata/Inconsolata_SemiExpanded-Light.ttf"
+                    });
+                }
             }
-            */
-
         for (const std::string& candidate : fontCandidates) {
             std::ifstream file(candidate.c_str(), std::ios::binary);
             if (file.good()) {
@@ -155,6 +162,7 @@ namespace {
 
         return {};
     }
+    
 
     bool SDLCALL EventWatch(void* userdata, SDL_Event* event) {
         (void)userdata;
@@ -182,8 +190,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
     SDL_Window* window = SDL_CreateWindow(
         "SPHERICAL Control Panel",
-        1280,
-        1300,
+        1920,
+        1080,
         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE
     );
 
@@ -200,7 +208,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
         AppTheme::ScopedUIStyle panelScope(ui, g_activeStyle);
                 
         // New Panel Start
-        if (ui.begin_panel("Control Panel", 20, 20, 650, 1250)) {
+        if (ui.begin_panel("Control Panel", 20, 20, 500, 600)) {
             const Spherical::UIRect panelBounds = ui.get_current_panel_bounds();
             const Spherical::UIRect panelContentBounds = ui.get_current_panel_content_bounds();
             const float responsiveButtonWidth = std::clamp(panelContentBounds.w * 0.42f, 180.0f, 360.0f);
@@ -208,128 +216,126 @@ int main(int /*argc*/, char* /*argv*/[]) {
             ui.push_font(Spherical::FontStyle::Title);
             ui.label("SPHERICAL Interactive Control Panel");
             ui.pop_font();
-            
-            ui.label("This uses the regular font style.");
             ui.spacing();
-            ui.push_button_width(responsiveButtonWidth);
-            if (ui.button(g_appUI.newButtonToggled ? "New Button (ON)" : "New Button (OFF)")) {
-                g_appUI.newButtonToggled = !g_appUI.newButtonToggled;
-            }
-            ui.pop_button_width();
-            
-            {
+
+            if (ui.begin_panel_subsection("Overview")) {
+                ui.label("This uses the regular font style.");
+                ui.spacing();
+                ui.push_button_width(responsiveButtonWidth);
+                if (ui.button(g_appUI.newButtonToggled ? "New Button (ON)" : "New Button (OFF)")) {
+                    g_appUI.newButtonToggled = !g_appUI.newButtonToggled;
+                }
+                ui.pop_button_width();
+
                 char status_label[64];
                 snprintf(status_label, sizeof(status_label), "New Button State: %s",
                     g_appUI.newButtonToggled ? "ON" : "OFF");
                 ui.label(status_label);
             }
-            
-            ui.spacing();
-            
-            if (ui.radio_button("Mode A", &g_appUI.selectedMode, 0)) {
-            // changed to Mode A
-            }
-            if (ui.radio_button("Mode B", &g_appUI.selectedMode, 1)) {
-                // changed to Mode B
-            }
-            if (ui.radio_button("Mode C", &g_appUI.selectedMode, 2)) {
-                // changed to Mode C
-            }
-            
-            ui.spacing();
-            
-            // FPS display
-            {
-                char fps_label[64];
-                snprintf(fps_label, sizeof(fps_label), "FPS: %.1f", g_appUI.GetFPS());
-                ui.label(fps_label);
-            }
+            ui.end_panel_subsection();
 
-            // Mouse position
-            {
-                float mouseX = 0.0f, mouseY = 0.0f;
-                SDL_GetMouseState(&mouseX, &mouseY);
-                char mouse_label[128];
-                snprintf(mouse_label, sizeof(mouse_label), "Mouse: (%d, %d)",
-                         static_cast<int>(mouseX), static_cast<int>(mouseY));
-                ui.label(mouse_label);
+            if (ui.begin_panel_subsection("Modes & Metrics")) {
+                if (ui.radio_button("Mode A", &g_appUI.selectedMode, 0)) {
+                    // changed to Mode A
+                }
+                if (ui.radio_button("Mode B", &g_appUI.selectedMode, 1)) {
+                    // changed to Mode B
+                }
+                if (ui.radio_button("Mode C", &g_appUI.selectedMode, 2)) {
+                    // changed to Mode C
+                }
+
+                ui.spacing();
+
+                if (ui.begin_panel_subsection("Telemetry")) {
+                    {
+                        char fps_label[64];
+                        snprintf(fps_label, sizeof(fps_label), "FPS: %.1f", g_appUI.GetFPS());
+                        ui.label(fps_label);
+                    }
+
+                    {
+                        float mouseX = 0.0f, mouseY = 0.0f;
+                        SDL_GetMouseState(&mouseX, &mouseY);
+                        char mouse_label[128];
+                        snprintf(mouse_label, sizeof(mouse_label), "Mouse: (%d, %d)",
+                                 static_cast<int>(mouseX), static_cast<int>(mouseY));
+                        ui.label(mouse_label);
+                    }
+
+                    {
+                        char window_label[64];
+                        snprintf(window_label, sizeof(window_label), "Window: %ux%u",
+                                 ui.get_framebuffer_width(), ui.get_framebuffer_height());
+                        ui.label(window_label);
+                    }
+
+                    {
+                        char panel_label[96];
+                        snprintf(panel_label, sizeof(panel_label), "Panel: %.0fx%.0f", panelBounds.w, panelBounds.h);
+                        ui.label(panel_label);
+                    }
+                }
+                ui.end_panel_subsection();
             }
+            ui.end_panel_subsection();
 
-            // Window size
-            {
-                char window_label[64];
-                snprintf(window_label, sizeof(window_label), "Window: %ux%u",
-                         ui.get_framebuffer_width(), ui.get_framebuffer_height());
-                ui.label(window_label);
-            }
+            if (ui.begin_panel_subsection("Color Controls")) {
+                ui.slider_float("R:", &g_appUI.colorR, 0.0f, 1.0f, 0.01f);
+                ui.slider_float("G:", &g_appUI.colorG, 0.0f, 1.0f, 0.01f);
+                ui.slider_float("B:", &g_appUI.colorB, 0.0f, 1.0f, 0.01f);
 
-            {
-                char panel_label[96];
-                snprintf(panel_label, sizeof(panel_label), "Panel: %.0fx%.0f", panelBounds.w, panelBounds.h);
-                ui.label(panel_label);
-            }
-
-            ui.spacing();
-
-            // Color sliders
-            ui.slider_float("R:", &g_appUI.colorR, 0.0f, 1.0f, 0.01f);
-            ui.slider_float("G:", &g_appUI.colorG, 0.0f, 1.0f, 0.01f);
-            ui.slider_float("B:", &g_appUI.colorB, 0.0f, 1.0f, 0.01f);
-
-            {
                 char color_label[64];
                 snprintf(color_label, sizeof(color_label), "Color: (%.2f, %.2f, %.2f)",
                          g_appUI.colorR, g_appUI.colorG, g_appUI.colorB);
                 ui.label(color_label);
             }
+            ui.end_panel_subsection();
 
-            ui.spacing();
+            if (ui.begin_panel_subsection("Theme Preset")) {
+                ui.label("Choose a base theme preset.");
 
-            ui.label("Theme Preset");
-            int selectedTheme = static_cast<int>(g_selectedThemePreset);
-            ui.radio_button("Classic Light", &selectedTheme, static_cast<int>(AppTheme::ThemePresetId::ClassicLight));
-            ui.radio_button("Midnight Dark", &selectedTheme, static_cast<int>(AppTheme::ThemePresetId::MidnightDark));
-            ui.radio_button("Deep Ocean Blue", &selectedTheme, static_cast<int>(AppTheme::ThemePresetId::DeepOceanBlue));
+                int selectedTheme = static_cast<int>(g_selectedThemePreset);
+                ui.radio_button("Classic Light", &selectedTheme, static_cast<int>(AppTheme::ThemePresetId::ClassicLight));
+                ui.radio_button("Midnight Dark", &selectedTheme, static_cast<int>(AppTheme::ThemePresetId::MidnightDark));
+                ui.radio_button("Deep Ocean Blue", &selectedTheme, static_cast<int>(AppTheme::ThemePresetId::DeepOceanBlue));
+                ui.radio_button("Neo Green", &selectedTheme, static_cast<int>(AppTheme::ThemePresetId::NeoGreen));
 
-            switch (static_cast<AppTheme::ThemePresetId>(selectedTheme)) {
-                case AppTheme::ThemePresetId::ClassicLight:
-                    g_selectedThemePreset = AppTheme::ThemePresetId::ClassicLight;
-                    break;
-                case AppTheme::ThemePresetId::MidnightDark:
-                    g_selectedThemePreset = AppTheme::ThemePresetId::MidnightDark;
-                    break;
-                case AppTheme::ThemePresetId::DeepOceanBlue:
-                    g_selectedThemePreset = AppTheme::ThemePresetId::DeepOceanBlue;
-                    break;
-                default:
-                    g_selectedThemePreset = AppTheme::ThemePresetId::ClassicLight;
-                    break;
+                switch (static_cast<AppTheme::ThemePresetId>(selectedTheme)) {
+                    case AppTheme::ThemePresetId::ClassicLight:
+                        g_selectedThemePreset = AppTheme::ThemePresetId::ClassicLight;
+                        break;
+                    case AppTheme::ThemePresetId::MidnightDark:
+                        g_selectedThemePreset = AppTheme::ThemePresetId::MidnightDark;
+                        break;
+                    case AppTheme::ThemePresetId::DeepOceanBlue:
+                        g_selectedThemePreset = AppTheme::ThemePresetId::DeepOceanBlue;
+                        break;
+                    case AppTheme::ThemePresetId::NeoGreen:
+                        g_selectedThemePreset = AppTheme::ThemePresetId::NeoGreen;
+                        break;
+                }
             }
+            ui.end_panel_subsection();
 
-            ui.spacing();
-
-            ui.push_font(Spherical::FontStyle::Title);
-            ui.label("Button Theme Colors");
-            ui.pop_font();
-
-            {
+            if (ui.begin_panel_subsection("Button Theme Colors")) {
                 // Keep theme tuning scoped so section-level overrides can be added safely later.
                 AppTheme::UIStyle sectionStyle = g_activeStyle;
                 AppTheme::ScopedUIStyle sectionScope(ui, sectionStyle);
 
-                ui.label("Button Style");
-                ui.radio_button("Flat", &g_styleOverrides.buttonStyleMode, static_cast<int>(Spherical::ButtonStyle::Flat));
-                ui.radio_button("Embossed", &g_styleOverrides.buttonStyleMode, static_cast<int>(Spherical::ButtonStyle::Embossed));
-                ui.spacing();
+                if (ui.begin_panel_subsection("Geometry")) {
+                    ui.label("Button Style");
+                    ui.radio_button("Flat", &g_styleOverrides.buttonStyleMode, static_cast<int>(Spherical::ButtonStyle::Flat));
+                    ui.radio_button("Embossed", &g_styleOverrides.buttonStyleMode, static_cast<int>(Spherical::ButtonStyle::Embossed));
+                    ui.spacing();
 
-                ui.slider_float("Button Height", &g_styleOverrides.buttonHeight, 20.0f, 64.0f, 1.0f);
-                ui.slider_float("Button Width", &g_styleOverrides.buttonWidth, 0.0f, 360.0f, 1.0f);
-                ui.slider_float("Corner Radius", &g_styleOverrides.buttonCornerRadius, 0.0f, 16.0f, 0.5f);
-                ui.slider_float("Border Thickness", &g_styleOverrides.buttonBorderThickness, 0.0f, 6.0f, 0.5f);
-                ui.slider_float("Padding X", &g_styleOverrides.buttonPadding.x, 0.0f, 24.0f, 1.0f);
-                ui.slider_float("Padding Y", &g_styleOverrides.buttonPadding.y, 0.0f, 24.0f, 1.0f);
+                    ui.slider_float("Button Height", &g_styleOverrides.buttonHeight, 20.0f, 64.0f, 1.0f);
+                    ui.slider_float("Button Width", &g_styleOverrides.buttonWidth, 0.0f, 360.0f, 1.0f);
+                    ui.slider_float("Corner Radius", &g_styleOverrides.buttonCornerRadius, 0.0f, 16.0f, 0.5f);
+                    ui.slider_float("Border Thickness", &g_styleOverrides.buttonBorderThickness, 0.0f, 6.0f, 0.5f);
+                    ui.slider_float("Padding X", &g_styleOverrides.buttonPadding.x, 0.0f, 24.0f, 1.0f);
+                    ui.slider_float("Padding Y", &g_styleOverrides.buttonPadding.y, 0.0f, 24.0f, 1.0f);
 
-                {
                     char widthLabel[96];
                     if (g_styleOverrides.buttonWidth <= 0.0f) {
                         snprintf(widthLabel, sizeof(widthLabel), "Button Width: Full row width");
@@ -338,75 +344,163 @@ int main(int /*argc*/, char* /*argv*/[]) {
                     }
                     ui.label(widthLabel);
                 }
-                ui.spacing();
+                ui.end_panel_subsection();
 
-                EditColorRgb(ui, "Button Normal Background", g_styleOverrides.buttonBackgroundColor);
-                ui.spacing();
-                EditColorRgb(ui, "Button Hover Background", g_styleOverrides.buttonHoverBackgroundColor);
-                ui.spacing();
-                EditColorRgb(ui, "Button Clicked Background", g_styleOverrides.buttonClickedBackgroundColor);
-                ui.spacing();
-                EditColorRgb(ui, "Button Bevel Highlight", g_styleOverrides.buttonHighlightColor);
-                ui.spacing();
-                EditColorRgb(ui, "Button Bevel Shadow", g_styleOverrides.buttonShadowColor);
+                if (ui.begin_panel_subsection("Palette")) {
+                    EditColorRgb(ui, "Button Normal Background", g_styleOverrides.buttonBackgroundColor);
+                    ui.spacing();
+                    EditColorRgb(ui, "Button Hover Background", g_styleOverrides.buttonHoverBackgroundColor);
+                    ui.spacing();
+                    EditColorRgb(ui, "Button Clicked Background", g_styleOverrides.buttonClickedBackgroundColor);
+                    ui.spacing();
+                    EditColorRgb(ui, "Button Bevel Highlight", g_styleOverrides.buttonHighlightColor);
+                    ui.spacing();
+                    EditColorRgb(ui, "Button Bevel Shadow", g_styleOverrides.buttonShadowColor);
+                }
+                ui.end_panel_subsection();
             }
+            ui.end_panel_subsection();
 
-            ui.spacing();
+            if (ui.begin_panel_subsection("Actions")) {
+                ui.push_button_width(responsiveButtonWidth);
+                if (ui.button("Click Me")) {
+                    g_appUI.clickCounter++;
+                }
+                ui.pop_button_width();
 
-            // Click counter button
-            ui.push_button_width(responsiveButtonWidth);
-            if (ui.button("Click Me")) {
-                g_appUI.clickCounter++;
-            }
-            ui.pop_button_width();
+                {
+                    char click_label[64];
+                    snprintf(click_label, sizeof(click_label), "Clicks: %d", g_appUI.clickCounter);
+                    ui.label(click_label);
+                }
 
-            {
-                char click_label[64];
-                snprintf(click_label, sizeof(click_label), "Clicks: %d", g_appUI.clickCounter);
-                ui.label(click_label);
-            }
+                ui.spacing();
 
-            ui.spacing();
+                ui.text_input("Text Input:", g_appUI.textInput, sizeof(g_appUI.textInput));
 
-            // Text input
-            ui.text_input("Text Input:", g_appUI.textInput, sizeof(g_appUI.textInput));
+                {
+                    char text_label[256];
+                    snprintf(text_label, sizeof(text_label), "Captured: %s", g_appUI.textInput);
+                    ui.label(text_label);
+                }
 
-            {
-                char text_label[256];
-                snprintf(text_label, sizeof(text_label), "Captured: %s", g_appUI.textInput);
-                ui.label(text_label);
-            }
+                ui.spacing();
 
-            ui.spacing();
+                ui.push_button_width(responsiveButtonWidth);
+                if (ui.button(!g_appUI.isLoadingProject ? "Load Project" : "Loading...")) {
+                    if (!g_appUI.isLoadingProject) {
+                        g_appUI.isLoadingProject = true;
+                        g_appUI.loadStartTime = std::chrono::high_resolution_clock::now();
+                        // TODO: Trigger async task via Spherical::TaskRunner in future
+                    }
+                }
+                ui.pop_button_width();
 
-            // Load project button
-            ui.push_button_width(responsiveButtonWidth);
-            if (ui.button(!g_appUI.isLoadingProject ? "Load Project" : "Loading...")) {
-                if (!g_appUI.isLoadingProject) {
-                    g_appUI.isLoadingProject = true;
-                    g_appUI.loadStartTime = std::chrono::high_resolution_clock::now();
-                    // TODO: Trigger async task via Spherical::TaskRunner in future
+                {
+                    char load_label[64];
+                    if (g_appUI.isLoadingProject) {
+                        const auto elapsed = std::chrono::duration<double>(
+                            std::chrono::high_resolution_clock::now() - g_appUI.loadStartTime
+                        ).count();
+                        snprintf(load_label, sizeof(load_label), "Loading... (%.1fs)", elapsed);
+                    } else {
+                        snprintf(load_label, sizeof(load_label), "Projects loaded: %d", g_appUI.projectsLoaded);
+                    }
+                    ui.label(load_label);
                 }
             }
-            ui.pop_button_width();
+            ui.end_panel_subsection();
 
-            {
-                char load_label[64];
-                if (g_appUI.isLoadingProject) {
-                    const auto elapsed = std::chrono::duration<double>(
-                        std::chrono::high_resolution_clock::now() - g_appUI.loadStartTime
-                    ).count();
-                    snprintf(load_label, sizeof(load_label), "Loading... (%.1fs)", elapsed);
-                } else {
-                    snprintf(load_label, sizeof(load_label), "Projects loaded: %d", g_appUI.projectsLoaded);
-                }
-                ui.label(load_label);
-            }
-            
             ui.spacing();
                         
         }
         ui.end_panel();  // Always call end_panel() — required even if begin_panel() returned false
+
+        // Demo: Workspace Container (manages layout only; panels are rendered separately)
+        if (ui.begin_workspace_container(kWorkspaceContainerTitle, 540, 20, 800, 600)) {
+            // Container displays the docking visualization, info, etc.
+            // Actual panels are rendered below, OUTSIDE this block
+        }
+        ui.end_workspace_container();
+
+        // These panels can be dragged into the workspace container
+        // They're rendered OUTSIDE the container block (not nested inside it)
+        if (ui.begin_panel("Panel A", 20, 640, 250, 300)) {
+            ui.label("Panel A");
+            ui.label("Drag this panel into the");
+            ui.label("Workspace Container!");
+            ui.spacing();
+            if (ui.button("Button in Panel A")) {
+                std::cout << "Panel A button clicked" << std::endl;
+            }
+        }
+        ui.end_panel();
+
+        if (ui.begin_panel("Panel B", 290, 640, 250, 300)) {
+            ui.label("Panel B");
+            ui.label("This is another panel");
+            ui.label("Try docking multiple");
+            ui.label("panels in the container");
+            ui.spacing();
+            if (ui.button("Button in Panel B")) {
+                std::cout << "Panel B button clicked" << std::endl;
+            }
+        }
+        ui.end_panel();
+
+        if (ui.begin_panel("Panel C", 560, 640, 250, 300)) {
+            ui.label("Panel C");
+            ui.label("Panels will snap to");
+            ui.label("grid positions based on");
+            ui.label("your drop zone");
+            ui.spacing();
+            if (ui.button("Button in Panel C")) {
+                std::cout << "Panel C button clicked" << std::endl;
+            }
+        }
+        ui.end_panel();
+        
+        if (ui.begin_panel("Panel D", 830, 640, 250, 300)) {
+            ui.label("Panel D");
+            ui.label("Panels will snap to");
+            ui.label("grid positions based on");
+            ui.label("your drop zone");
+            ui.spacing();
+            if (ui.button("Button in Panel D")) {
+                std::cout << "Panel D button clicked" << std::endl;
+            }
+        }
+        ui.end_panel();
+        
+        if (ui.begin_panel("Panel E", 1100, 640, 250, 300)) {
+            ui.label("Panel E");
+            ui.label("Panels will snap to");
+            ui.label("grid positions based on");
+            ui.label("your drop zone");
+            ui.spacing();
+            if (ui.button("Button in Panel E")) {
+                std::cout << "Panel E button clicked" << std::endl;
+            }
+        }
+        ui.end_panel();
+
+        // Display workspace info in a separate debug panel
+        if (ui.begin_panel("Workspace Info", 20, 960, 550, 250)) {
+            int panelCount = ui.get_workspace_panel_count(kWorkspaceContainerTitle);
+            Spherical::DockLayout layout = ui.get_workspace_dock_layout(kWorkspaceContainerTitle);
+            const char* layoutStr = (layout == Spherical::DockLayout::SideBySide) ? "SideBySide" : "TopBottom";
+            
+            char workspace_label[128];
+            snprintf(workspace_label, sizeof(workspace_label), 
+                "Docked Panels: %d | Layout: %s", panelCount, layoutStr);
+            ui.label(workspace_label);
+            
+            ui.label("");
+            ui.label("Drag panels into the workspace container above.");
+            ui.label("Click the red circle button on a docked panel to undock it.");
+            ui.label("The remaining docked panels expand automatically.");
+        }
+        ui.end_panel();
     });
 
     const std::string fontPath = ResolveAppFontPath();
@@ -416,14 +510,15 @@ int main(int /*argc*/, char* /*argv*/[]) {
         std::cout << "Using UI font: " << fontPath << std::endl;
     }
 
-    Spherical::SphericalInitInfo initInfo{};
-    initInfo.window = window;
-    initInfo.fontPath = fontPath.empty() ? nullptr : fontPath.c_str();
-    initInfo.preferImmediatePresent = false;
-    initInfo.framesInFlight = 1;
-    initInfo.enableValidation = false;
-    initInfo.fontRenderMode = Spherical::FontRenderMode::MSDF;
-    initInfo.manualDpiScale = 0.0f; 
+    Spherical::SphericalInitInfo initInfo{
+        window,
+        fontPath.empty() ? nullptr : fontPath.c_str(),
+        Spherical::FontRenderMode::MSDF,
+        0.0f,
+        false,
+        1,
+        false
+    };
 
     if (!Spherical::Init(initInfo)) {
         std::cerr << "Failed to initialize SPHERICAL SDK!" << std::endl;

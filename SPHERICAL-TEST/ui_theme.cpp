@@ -60,6 +60,33 @@ const ThemePreset kDeepOceanBlue{
         {0.92f, 0.98f, 1.0f, 1.0f}
     }
 };
+
+const ThemePreset kNeoGreen{
+    "Neo Green",
+    UIStyle{
+        {0.05f, 0.10f, 0.07f, 1.0f},
+        {0.08f, 0.20f, 0.12f, 1.0f},
+        {0.22f, 0.82f, 0.48f, 1.0f},
+        {0.90f, 1.0f, 0.94f, 1.0f},
+        {0.86f, 0.98f, 0.90f, 1.0f},
+        {0.86f, 0.98f, 0.90f, 1.0f},
+        {0.10f, 0.32f, 0.18f, 1.0f},
+        {0.14f, 0.44f, 0.24f, 1.0f},
+        {0.06f, 0.24f, 0.14f, 1.0f},
+        30.0f,
+        200.0f,
+        4.0f,
+        1.0f,
+        {12.0f, 7.0f},
+        Spherical::ButtonStyle::Embossed,
+        {0.66f, 0.96f, 0.74f, 1.0f},
+        {0.03f, 0.10f, 0.06f, 1.0f},
+        {0.20f, 0.70f, 0.40f, 1.0f},
+        {0.03f, 0.12f, 0.07f, 1.0f},
+        {0.10f, 0.22f, 0.14f, 1.0f},
+        {0.86f, 0.98f, 0.90f, 1.0f}
+    }
+};
 } // namespace
 
 const ThemePreset& GetThemePreset(ThemePresetId id) {
@@ -70,9 +97,11 @@ const ThemePreset& GetThemePreset(ThemePresetId id) {
             return kMidnightDark;
         case ThemePresetId::DeepOceanBlue:
             return kDeepOceanBlue;
-        default:
-            return kClassicLight;
+        case ThemePresetId::NeoGreen:
+            return kNeoGreen;
     }
+
+    return kClassicLight;
 }
 
 } // namespace AppTheme

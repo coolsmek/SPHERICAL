@@ -188,8 +188,8 @@ Spherical::RegisterUI([](Spherical::UIPainter& ui) {
         ui.label("Hello, World!");
         if (ui.button("Click Me")) { /* handle click */ }
         ui.slider_float("Value:", &myVar, 0.0f, 1.0f, 0.01f);
-        ui.end_panel();
     }
+    ui.end_panel();
 });
 ```
 
@@ -214,7 +214,7 @@ The public lifecycle and UI entry points:
 - `Spherical::Render()` — Render (SDK handles Vulkan acquire/record/submit/present internally)
 - `Spherical::Shutdown()` — Cleanup
 - **`Spherical::RegisterUI(UIBuildFn callback)`** — Register the app's UI definition callback
-- `Spherical::UIPainter` — Abstract interface for UI authoring (labels, sliders, buttons, etc.)
+- `Spherical::UIPainter` — Abstract interface for UI authoring (labels, sliders, buttons, collapsible subsections, etc.)
 
 ### Using the Declarative UI API
 
@@ -223,26 +223,32 @@ Applications register a single UI build callback before calling `Spherical::Init
 ```cpp
 Spherical::RegisterUI([](Spherical::UIPainter& ui) {
     if (ui.begin_panel("Control Panel", 20, 20, 350, 550)) {
-        // Static labels
-        ui.label("Status: Ready");
-        
-        // Interactive controls
-        ui.slider_float("Intensity:", &intensity, 0.0f, 1.0f, 0.01f);
-        
-        // Buttons with immediate click detection
-        if (ui.button("Apply")) {
-            ApplySettings();
+        if (ui.begin_panel_subsection("Status")) {
+            ui.label("Status: Ready");
         }
-        
-        // Text input
-        ui.text_input("Search:", searchBuffer, sizeof(searchBuffer));
-        
-        ui.end_panel();
+        ui.end_panel_subsection();
+
+        if (ui.begin_panel_subsection("Controls")) {
+            ui.slider_float("Intensity:", &intensity, 0.0f, 1.0f, 0.01f);
+
+            if (ui.begin_panel_subsection("Advanced")) {
+                ui.text_input("Search:", searchBuffer, sizeof(searchBuffer));
+            }
+            ui.end_panel_subsection();
+
+            if (ui.button("Apply")) {
+                ApplySettings();
+            }
+        }
+        ui.end_panel_subsection();
     }
+    ui.end_panel();
 });
 
 Spherical::Init(initInfo);
 ```
+
+`begin_panel_subsection()` headers render with a title and chevron-style expand/collapse button. Subsections default to expanded the first time they appear and preserve their expansion state across frames.
 
 ---
 

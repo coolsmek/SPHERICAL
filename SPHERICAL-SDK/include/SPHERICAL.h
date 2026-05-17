@@ -11,6 +11,7 @@
 #include <SDL3/SDL.h>
 #include <cstdint>
 #include "SphericalUI.h"
+#include "SphericalDockModel.h"
 
 namespace Spherical {
 
@@ -52,5 +53,38 @@ namespace Spherical {
      * @note Safe to call multiple times
      */
     SPHERICAL_API void Shutdown();
+
+    /**
+     * @brief Register function-table callbacks used to save/load/validate workspace dock models.
+     * @param table Callback table pointer. Pass nullptr to clear callbacks.
+     */
+    SPHERICAL_API void SetDockModelFunctionTable(const DockModelFunctionTable* table);
+
+    /**
+     * @brief Get the currently registered dock model function table.
+     */
+    SPHERICAL_API DockModelFunctionTable GetDockModelFunctionTable();
+
+    /**
+     * @brief Export one workspace container docking tree into a public model.
+     * @return true when container exists and model export succeeds.
+     */
+    SPHERICAL_API bool ExportWorkspaceModel(const char* containerTitle, WorkspaceContainerModel& outModel);
+
+    /**
+     * @brief Import one workspace container docking tree from a public model.
+     * @return true if model is valid and import succeeds.
+     */
+    SPHERICAL_API bool ImportWorkspaceModel(const char* containerTitle, const WorkspaceContainerModel& model);
+
+    /**
+     * @brief Save one workspace model using the registered function table.
+     */
+    SPHERICAL_API bool SaveWorkspaceModel(const char* containerTitle);
+
+    /**
+     * @brief Load one workspace model using the registered function table.
+     */
+    SPHERICAL_API bool LoadWorkspaceModel(const char* containerTitle);
 
 }
