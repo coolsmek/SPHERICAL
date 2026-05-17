@@ -8,7 +8,7 @@
 </p>
 
 **SPHERICAL** is a C++ GUI SDK prototype focused on building fast, responsive, desktop-style tooling UIs on top of **Vulkan 1.4 dynamic rendering**.
-> **Current Release** (Test Control Panel APP Only, **No SDK Library release yet**): [SPHERICAL_Test_PreRelease_v0.1.13-alpha.zip ](https://github.com/coolsmek/SPHERICAL/releases/tag/v0.1.13-alpha)
+> **Current Release** (Test Control Panel APP Only, **No SDK Library release yet**): [SPHERICAL_Test_Release_v0.2.1-alpha.zip](https://github.com/coolsmek/SPHERICAL/releases/tag/v0.1.13-alpha)
 
 ---
 
@@ -16,7 +16,7 @@
 
 Dev screenshots:
 <p align="center">
-    <img src="images/screenshots/screenshot-0001.jpg" alt="screenshot-001">
+    <img src="images/screenshots/screenshot-0002_v0.2.1.jpg" alt="screenshot-0002_v0.2.1">
 </p>
 
 ---
