@@ -3,6 +3,19 @@
 #include "VulkanRenderer.h"
 #include "FontRenderer.h"
 #include "TaskRunner.h"
+#include "docking/DockState.h"
+#include "docking/DockModelBridge.h"
+#include "docking/DockTreePrimitives.h"
+#include "docking/DockSplitterOps.h"
+#include "docking/DockLayoutOps.h"
+#include "docking/DockReconcileOps.h"
+#include "docking/DockMutationOps.h"
+#include "docking/DockOverlayOps.h"
+#include "backend/SphericalBackendState.h"
+#include "backend/SphericalBackendOps.h"
+#include "runtime/SphericalRuntimeOps.h"
+#include "runtime/SphericalRuntimeState.h"
+#include "runtime/SphericalLifecycleOps.h"
 #include <vulkan/vulkan.h>
 #include <SDL3/SDL_vulkan.h>
 #include <algorithm>
@@ -11,6 +24,7 @@
 #include <cmath>
 #include <chrono>
 #include <thread>
+#include <atomic>
 #include <array>
 #include <cstddef>
 #include <unordered_map>
@@ -18,6 +32,8 @@
 #include <string>
 #include <iostream>
 #include <sstream>
+#include <mutex>
+#include <optional>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -27,34 +43,9 @@
 #endif
 
 namespace {
-    struct BackendState {
-        SDL_Window* window = nullptr;
+    using namespace Spherical::Internal;
 
-        VkInstance instance = VK_NULL_HANDLE;
-        VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-        VkDevice device = VK_NULL_HANDLE;
-        VkQueue graphicsQueue = VK_NULL_HANDLE;
-        VkSurfaceKHR surface = VK_NULL_HANDLE;
-        VkSwapchainKHR swapchain = VK_NULL_HANDLE;
-        VkCommandPool commandPool = VK_NULL_HANDLE;
-        VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-
-        uint32_t graphicsQueueIndex = 0;
-        VkFormat swapchainFormat = VK_FORMAT_B8G8R8A8_UNORM;
-        VkExtent2D swapchainExtent{1280, 720};
-
-        std::vector<VkImage> swapchainImages;
-        std::vector<VkImageView> swapchainImageViews;
-        std::vector<VkImageLayout> swapchainImageLayouts;
-
-        uint32_t currentImageIndex = 0;
-        VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
-        VkSemaphore renderFinishedSemaphore = VK_NULL_HANDLE;
-        VkFence inFlightFence = VK_NULL_HANDLE;
-
-        bool preferImmediatePresent = true;
-        bool initialized = false;
-    };
+    using BackendState = Spherical::Backend::BackendState;
     
     struct ScrollbarDragState {
         bool active = false;
@@ -103,7 +94,92 @@ namespace {
         float offsetFromCenterY = 0.0f;
         float width = 0.0f;
         float height = 0.0f;
+        float initialOffsetFromCenterX = 0.0f;
+        float initialOffsetFromCenterY = 0.0f;
+        float initialWidth = 0.0f;
+        float initialHeight = 0.0f;
     };
+
+    struct PanelSubsectionPersistentState {
+        bool initialized = false;
+        bool expanded = true;
+    };
+
+    constexpr char kPanelSubsectionStatePanelSeparator = '\x1E';
+    constexpr char kPanelSubsectionStatePathSeparator = '\x1F';
+
+    static bool IsDockTerminalNode(const DockNode* node);
+    static struct nk_rect InsetDockedPanelRect(const struct nk_rect& rect);
+    static struct nk_rect GetDockSplitterLineRect(const DockNode* node, std::size_t boundaryIndex, float thickness = 2.0f);
+    static struct nk_rect GetDockSplitterHitRect(const DockNode* node, std::size_t boundaryIndex, float thickness = 10.0f);
+    static bool DockTreeContainsNode(const DockNode* root, const DockNode* target);
+    static bool IsValidDockSplitterRef(const DockNode* root, const DockSplitterRef& ref);
+    static void PruneWorkspaceSplitterLinks(WorkspaceContainerState& containerState);
+    static void PruneWorkspaceSplitterIntersections(WorkspaceContainerState& containerState);
+    static void CollectDockSplitterSegmentGeometry(const DockNode* node,
+                                                  Spherical::DockLayout splitDirection,
+                                                  std::vector<DockSplitterSegmentGeometry>& outSegments);
+    static std::vector<DockSplitterRef> CollectDockSplitterChain(const DockNode* root,
+                                                                 Spherical::DockLayout splitDirection,
+                                                                 const std::vector<DockSplitterRef>& seedRefs);
+    static std::vector<DockSplitterRef> GetLinkedDockSplitterRefs(WorkspaceContainerState& containerState,
+                                                                  DockNode* node,
+                                                                  std::size_t boundaryIndex);
+    static bool AreDockSplitterRefsLogicallyUnified(WorkspaceContainerState& containerState,
+                                                    Spherical::DockLayout splitDirection,
+                                                    const DockSplitterRef& first,
+                                                    const DockSplitterRef& second);
+    static void RegisterLinkedSplitterGroup(WorkspaceContainerState& containerState,
+                                            Spherical::DockLayout splitDirection,
+                                            std::vector<DockSplitterRef> members);
+    static void RegisterSplitterIntersection(WorkspaceContainerState& containerState,
+                                            float x,
+                                            float y,
+                                            std::vector<DockSplitterRef> verticalMembers,
+                                            std::vector<DockSplitterRef> horizontalMembers);
+    static DockSplitterHit FindDockSplitterAtPoint(DockNode* node, float x, float y,
+                                                   float visualThickness = 2.0f, float hitThickness = 10.0f);
+    static bool GetDockSplitterClampRange(const DockNode* node,
+                                          std::size_t boundaryIndex,
+                                          float leafMinWidth,
+                                          float leafMinHeight,
+                                          float& outMinPosition,
+                                          float& outMaxPosition);
+    static float ClampDockSplitterPosition(const DockNode* node, std::size_t boundaryIndex, float proposedPosition,
+                                          float leafMinWidth, float leafMinHeight);
+    static float ClampLinkedDockSplitterPosition(WorkspaceContainerState& containerState,
+                                                 DockNode* node,
+                                                 std::size_t boundaryIndex,
+                                                 float proposedPosition,
+                                                 float leafMinWidth,
+                                                 float leafMinHeight);
+    static void AdjustDockSplitterToPosition(DockNode* node, std::size_t boundaryIndex, float proposedPosition,
+                                             float leafMinWidth, float leafMinHeight);
+    static bool TryUnifyDockSplitterBoundary(std::unique_ptr<DockNode>& root,
+                                             WorkspaceContainerState& containerState,
+                                             DockNode* activeNode,
+                                             std::size_t activeBoundaryIndex,
+                                             float snapThreshold,
+                                             float leafMinWidth,
+                                             float leafMinHeight,
+                                             DockSplitterHit& outUnifiedHit);
+    static bool CascadeWorkspaceContainerSplitterUnifications(std::unique_ptr<DockNode>& root,
+                                                              WorkspaceContainerState& containerState,
+                                                              const struct nk_rect& rootRect,
+                                                              float snapThreshold,
+                                                              float leafMinWidth,
+                                                              float leafMinHeight);
+    static void ReconcileWorkspaceContainerSplitters(std::unique_ptr<DockNode>& root,
+                                                     WorkspaceContainerState& containerState,
+                                                     const struct nk_rect& rootRect,
+                                                     float leafMinWidth,
+                                                     float leafMinHeight);
+    static void CollapseDockGroups(std::unique_ptr<DockNode>& node);
+    static void NormalizeDockNodeLayoutForBounds(DockNode* node, const struct nk_rect& parentRect,
+                                                 float leafMinWidth, float leafMinHeight);
+    static void DrawDockSplitLinesForClipRect(nk_command_buffer* buffer, const DockNode* root, const struct nk_rect& clipRect,
+                                              const DockSplitterHit& activeHit, const DockSplitterHit& hoveredHit);
+    static void DrawWorkspaceSplitterOverlay(nk_context* context, const VkExtent2D& framebufferExtent);
 
     enum class CursorRequest {
         Default,
@@ -180,11 +256,196 @@ namespace {
     ScrollbarDragState g_scrollbarDrag;
     SliderTrackDragState g_sliderTrackDrag;
     PanelDragState g_panelDrag;
+    SplitterDragState g_splitterDrag;
     std::unordered_map<std::string, PanelPersistentState> g_panelStates;
+    std::unordered_map<std::string, PanelSubsectionPersistentState> g_panelSubsectionStates;
+    std::unordered_map<std::string, WorkspaceContainerState> g_workspaceContainerStates;
+    DropTargetState g_dropTargetState;
     CursorState g_cursorState;
+    std::atomic<uint64_t> g_renderFrameCounter{0};
+    std::chrono::steady_clock::time_point g_lastRenderSyncLogTime{};
+    std::atomic<bool> g_renderWatchdogRunning{false};
+    std::thread g_renderWatchdogThread;
+    std::atomic<uint64_t> g_renderWatchdogSerial{0};
+    std::atomic<int> g_renderWatchdogStage{0};
+    std::mutex g_runtimeDiagMutex;
+    std::string g_runtimeDiagLogPath;
+
+    enum class RenderWatchdogStage : int {
+        Idle = 0,
+        NewFrameEvents,
+        NewFrameTaskPoll,
+        WaitFence,
+        AcquireImage,
+        BuildUi,
+        EndCommandBuffer,
+        Submit,
+        Present
+    };
+
+    static const char* RenderWatchdogStageName(RenderWatchdogStage stage) {
+        switch (stage) {
+            case RenderWatchdogStage::Idle:
+                return "idle";
+            case RenderWatchdogStage::NewFrameEvents:
+                return "new_frame_events";
+            case RenderWatchdogStage::NewFrameTaskPoll:
+                return "new_frame_task_poll";
+            case RenderWatchdogStage::WaitFence:
+                return "wait_fence";
+            case RenderWatchdogStage::AcquireImage:
+                return "acquire_image";
+            case RenderWatchdogStage::BuildUi:
+                return "build_ui";
+            case RenderWatchdogStage::EndCommandBuffer:
+                return "end_command_buffer";
+            case RenderWatchdogStage::Submit:
+                return "submit";
+            case RenderWatchdogStage::Present:
+                return "present";
+        }
+        return "unknown";
+    }
+
+    static const std::string& RuntimeDiagLogPath() {
+        if (g_runtimeDiagLogPath.empty()) {
+            const char* basePath = SDL_GetBasePath();
+            if (basePath != nullptr && basePath[0] != '\0') {
+                g_runtimeDiagLogPath = std::string(basePath) + "spherical_runtime_diag.log";
+            } else {
+                g_runtimeDiagLogPath = "spherical_runtime_diag.log";
+            }
+        }
+        return g_runtimeDiagLogPath;
+    }
+
+    static void ResetRuntimeDiagLog() {
+        const std::lock_guard<std::mutex> lock(g_runtimeDiagMutex);
+        std::ofstream file(RuntimeDiagLogPath(), std::ios::trunc);
+        if (file) {
+            file << "[SPHERICAL][Diag] session begin" << std::endl;
+        }
+    }
+
+    static void AppendRuntimeDiag(const std::string& message) {
+        const std::lock_guard<std::mutex> lock(g_runtimeDiagMutex);
+        std::ofstream file(RuntimeDiagLogPath(), std::ios::app);
+        if (file) {
+            file << message << std::endl;
+        }
+    }
+
+    static void SetRenderWatchdogStage(RenderWatchdogStage stage) {
+        g_renderWatchdogStage.store(static_cast<int>(stage), std::memory_order_relaxed);
+        g_renderWatchdogSerial.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    static void StartRenderWatchdog() {
+        if (g_renderWatchdogRunning.exchange(true, std::memory_order_acq_rel)) {
+            return;
+        }
+
+        AppendRuntimeDiag("[SPHERICAL][Watchdog] started");
+
+        g_renderWatchdogThread = std::thread([]() {
+            uint64_t lastSerial = g_renderWatchdogSerial.load(std::memory_order_relaxed);
+            auto lastProgressTime = std::chrono::steady_clock::now();
+            auto lastHeartbeatTime = std::chrono::steady_clock::now();
+            bool reportedCurrentStall = false;
+
+            while (g_renderWatchdogRunning.load(std::memory_order_acquire)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+
+                const uint64_t serial = g_renderWatchdogSerial.load(std::memory_order_relaxed);
+                const RenderWatchdogStage stage = static_cast<RenderWatchdogStage>(
+                    g_renderWatchdogStage.load(std::memory_order_relaxed));
+                const uint64_t frame = g_renderFrameCounter.load(std::memory_order_relaxed);
+
+                const auto now = std::chrono::steady_clock::now();
+                const auto heartbeatMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastHeartbeatTime).count();
+                if (heartbeatMs >= 1000) {
+                    std::ostringstream hb;
+                    hb << "[SPHERICAL][Heartbeat] frame=" << frame
+                       << " stage=" << RenderWatchdogStageName(stage)
+                       << " serial=" << serial;
+                    AppendRuntimeDiag(hb.str());
+                    lastHeartbeatTime = now;
+                }
+
+                if (serial != lastSerial) {
+                    lastSerial = serial;
+                    lastProgressTime = now;
+                    reportedCurrentStall = false;
+                    continue;
+                }
+
+                if (stage == RenderWatchdogStage::Idle) {
+                    reportedCurrentStall = false;
+                    continue;
+                }
+
+                const auto stallMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - lastProgressTime).count();
+                if (!reportedCurrentStall && stallMs >= 1500) {
+                    std::ostringstream oss;
+                    oss << "[SPHERICAL][Watchdog] render stall stage="
+                        << RenderWatchdogStageName(stage)
+                        << " frame=" << frame
+                        << " stalled_ms=" << stallMs;
+                    const std::string line = oss.str();
+                    std::cerr << line << std::endl;
+                    AppendRuntimeDiag(line);
+                    reportedCurrentStall = true;
+                }
+            }
+        });
+    }
+
+    static void StopRenderWatchdog() {
+        if (!g_renderWatchdogRunning.exchange(false, std::memory_order_acq_rel)) {
+            return;
+        }
+
+        if (g_renderWatchdogThread.joinable()) {
+            g_renderWatchdogThread.join();
+        }
+
+        SetRenderWatchdogStage(RenderWatchdogStage::Idle);
+        AppendRuntimeDiag("[SPHERICAL][Watchdog] stopped");
+    }
+
+    static void LogRenderSyncEvent(const char* stage, VkResult result, uint64_t frameId) {
+        const auto now = std::chrono::steady_clock::now();
+        if (g_lastRenderSyncLogTime.time_since_epoch().count() != 0) {
+            const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastRenderSyncLogTime).count();
+            if (elapsedMs < 250) {
+                return;
+            }
+        }
+
+        g_lastRenderSyncLogTime = now;
+        std::ostringstream oss;
+        oss << "[SPHERICAL][RenderSync] frame=" << frameId
+            << " stage=" << stage
+            << " result=" << static_cast<int>(result);
+        const std::string line = oss.str();
+        std::cerr << line << std::endl;
+        AppendRuntimeDiag(line);
+    }
 
     static bool IsLeftMouseDown(const nk_context* ctx) {
         return ctx != nullptr && ctx->input.mouse.buttons[NK_BUTTON_LEFT].down != 0;
+    }
+
+    static bool IsLeftMouseDownAnywhere(const nk_context* ctx) {
+        if (IsLeftMouseDown(ctx)) {
+            return true;
+        }
+
+        float globalX = 0.0f;
+        float globalY = 0.0f;
+        const Uint32 globalButtons = SDL_GetGlobalMouseState(&globalX, &globalY);
+        return (globalButtons & SDL_BUTTON_MASK(SDL_BUTTON_LEFT)) != 0;
     }
 
     static bool WasLeftMousePressed(const nk_context* ctx) {
@@ -193,6 +454,15 @@ namespace {
         }
 
         const nk_mouse_button& button = ctx->input.mouse.buttons[NK_BUTTON_LEFT];
+        return button.down != 0 && button.clicked != 0;
+    }
+
+    static bool WasRightMousePressed(const nk_context* ctx) {
+        if (ctx == nullptr) {
+            return false;
+        }
+
+        const nk_mouse_button& button = ctx->input.mouse.buttons[NK_BUTTON_RIGHT];
         return button.down != 0 && button.clicked != 0;
     }
 
@@ -207,11 +477,29 @@ namespace {
                my >= rect.y && my <= (rect.y + rect.h);
     }
 
-    static float GetWindowHeaderHeight(const nk_context* ctx) {
-        if (ctx == nullptr || ctx->style.font == nullptr) {
+    static bool IsPointInsideRect(float x, float y, const struct nk_rect& rect) {
+        return x >= rect.x && x <= (rect.x + rect.w) &&
+               y >= rect.y && y <= (rect.y + rect.h);
+    }
+
+    static float GetWindowHeaderHeight(const nk_context* ctx, const nk_user_font* font = nullptr) {
+        const nk_user_font* headerFont = font;
+        if (ctx != nullptr && headerFont == nullptr) {
+            headerFont = ctx->style.font;
+        }
+        if (ctx == nullptr || headerFont == nullptr) {
             return 24.0f;
         }
-        return std::max(24.0f, ctx->style.font->height + 2.0f * ctx->style.window.header.padding.y);
+
+        // Match Nuklear's actual header draw path:
+        //   font height + header padding + label padding + 1px background overlap.
+        return std::max(
+            24.0f,
+            headerFont->height +
+                2.0f * ctx->style.window.header.padding.y +
+                2.0f * ctx->style.window.header.label_padding.y +
+                1.0f
+        );
     }
 
     static int CursorPriority(CursorRequest request) {
@@ -337,8 +625,429 @@ namespace {
         nk_end(context);
     }
 
+    static void DrawWorkspaceDockPreviewOverlay(nk_context* context, const VkExtent2D& framebufferExtent) {
+        if (context == nullptr || !g_dropTargetState.active) {
+            return;
+        }
+
+        const auto containerIt = g_workspaceContainerStates.find(g_dropTargetState.containerTitle);
+        if (containerIt == g_workspaceContainerStates.end() || !containerIt->second.initialized) {
+            return;
+        }
+
+        const float width = static_cast<float>(framebufferExtent.width);
+        const float height = static_cast<float>(framebufferExtent.height);
+        if (width <= 0.0f || height <= 0.0f) {
+            return;
+        }
+
+        const float centerX = width * 0.5f;
+        const float centerY = height * 0.5f;
+        const WorkspaceContainerState& containerState = containerIt->second;
+        const float headerHeight = containerState.headerHeight > 0.0f
+            ? containerState.headerHeight
+            : GetWindowHeaderHeight(context);
+
+        struct nk_rect containerBounds = nk_rect(
+            centerX + containerState.offsetFromCenterX,
+            centerY + containerState.offsetFromCenterY,
+            containerState.width,
+            containerState.height
+        );
+        struct nk_rect bodyRect = containerBounds;
+        bodyRect.y += headerHeight;
+        bodyRect.h = std::max(0.0f, bodyRect.h - headerHeight);
+
+        const nk_color previousBackground = context->style.window.background;
+        const nk_style_item previousFixedBackground = context->style.window.fixed_background;
+        const nk_color transparent = nk_rgba(0, 0, 0, 0);
+        context->style.window.background = transparent;
+        context->style.window.fixed_background = nk_style_item_color(transparent);
+
+        const nk_flags flags = NK_WINDOW_NO_SCROLLBAR | NK_WINDOW_NO_INPUT;
+        if (nk_begin(context, "__SPHERICAL_WORKSPACE_DOCK_PREVIEW_OVERLAY", nk_rect(0.0f, 0.0f, width, height), flags)) {
+            if (context->current != nullptr) {
+                nk_command_buffer* buffer = &context->current->buffer;
+                nk_push_scissor(buffer, nk_rect(0.0f, 0.0f, width, height));
+
+                if (g_dropTargetState.hoveredLeaf == nullptr) {
+                    if (bodyRect.w > 0.0f && bodyRect.h > 0.0f) {
+                        nk_fill_rect(buffer, bodyRect, 0.0f, nk_rgba(100, 150, 220, 55));
+                        nk_stroke_rect(buffer, bodyRect, 0.0f, 2.0f, nk_rgb(120, 180, 255));
+                    }
+                } else {
+                    const struct nk_rect& leafRect = g_dropTargetState.hoveredLeaf->computedRect;
+                    const nk_color zoneActive = nk_rgba(100, 150, 200, 100);
+                    const nk_color zoneDimmed = nk_rgba(100, 150, 200, 40);
+                    const nk_color zoneBorder = nk_rgb(100, 150, 200);
+                    const float w = leafRect.w;
+                    const float h = leafRect.h;
+                    const float marginW = w * 0.25f;
+                    const float marginH = h * 0.25f;
+
+                    const struct nk_rect centerRect = nk_rect(
+                        leafRect.x + marginW,
+                        leafRect.y + marginH,
+                        w * 0.5f,
+                        h * 0.5f
+                    );
+
+                    auto drawPolygonZone = [&](DropTargetState::DropZone zone, const float* points, int pointCount) {
+                        const nk_color color = (g_dropTargetState.zone == zone) ? zoneActive : zoneDimmed;
+                        nk_fill_polygon(buffer, points, pointCount, color);
+                        nk_stroke_polygon(buffer, points, pointCount, 1.0f, zoneBorder);
+                    };
+
+                    auto drawRectZone = [&](DropTargetState::DropZone zone, const struct nk_rect& rect) {
+                        const nk_color color = (g_dropTargetState.zone == zone) ? zoneActive : zoneDimmed;
+                        nk_fill_rect(buffer, rect, 0.0f, color);
+                        nk_stroke_rect(buffer, rect, 0.0f, 1.0f, zoneBorder);
+                    };
+
+                    const float topZonePoints[] = {
+                        leafRect.x, leafRect.y,
+                        leafRect.x + leafRect.w, leafRect.y,
+                        centerRect.x + centerRect.w, centerRect.y,
+                        centerRect.x, centerRect.y
+                    };
+                    const float leftZonePoints[] = {
+                        leafRect.x, leafRect.y,
+                        centerRect.x, centerRect.y,
+                        centerRect.x, centerRect.y + centerRect.h,
+                        leafRect.x, leafRect.y + leafRect.h
+                    };
+                    const float bottomZonePoints[] = {
+                        centerRect.x, centerRect.y + centerRect.h,
+                        centerRect.x + centerRect.w, centerRect.y + centerRect.h,
+                        leafRect.x + leafRect.w, leafRect.y + leafRect.h,
+                        leafRect.x, leafRect.y + leafRect.h
+                    };
+                    const float rightZonePoints[] = {
+                        centerRect.x + centerRect.w, centerRect.y,
+                        leafRect.x + leafRect.w, leafRect.y,
+                        leafRect.x + leafRect.w, leafRect.y + leafRect.h,
+                        centerRect.x + centerRect.w, centerRect.y + centerRect.h
+                    };
+
+                    drawPolygonZone(DropTargetState::DropZone::Top, topZonePoints, 4);
+                    drawPolygonZone(DropTargetState::DropZone::Left, leftZonePoints, 4);
+                    drawPolygonZone(DropTargetState::DropZone::Bottom, bottomZonePoints, 4);
+                    drawPolygonZone(DropTargetState::DropZone::Right, rightZonePoints, 4);
+                    drawRectZone(DropTargetState::DropZone::Center, centerRect);
+                }
+            }
+        }
+        nk_end(context);
+        context->style.window.background = previousBackground;
+        context->style.window.fixed_background = previousFixedBackground;
+    }
+
+    static void DrawWorkspaceSplitterOverlay(nk_context* context, const VkExtent2D& framebufferExtent) {
+        Spherical::DockOverlayOps::DrawWorkspaceSplitterOverlay(
+            context,
+            framebufferExtent,
+            g_workspaceContainerStates,
+            g_splitterDrag);
+    }
+
+    // ===== BSP Tree Utility Functions =====
+
+    using DockMinSize = Spherical::DockLayoutOps::DockMinSize;
+
+    static struct nk_rect InsetDockedPanelRect(const struct nk_rect& rect) {
+        return Spherical::DockTreePrimitives::InsetDockedPanelRect(rect);
+    }
+
+    static float GetDockNodeMainAxisExtent(const DockNode* node, Spherical::DockLayout splitDirection) {
+        return Spherical::DockTreePrimitives::GetDockNodeMainAxisExtent(node, splitDirection);
+    }
+
+    static float GetDockMinSizeMainAxisExtent(const DockMinSize& minSize, Spherical::DockLayout splitDirection) {
+        return (splitDirection == Spherical::DockLayout::SideBySide) ? minSize.width : minSize.height;
+    }
+
+    static float SumDockExtents(const std::vector<float>& extents) {
+        return Spherical::DockTreePrimitives::SumDockExtents(extents);
+    }
+
+    static void EnsureDockSplitStorage(DockNode* node) {
+        Spherical::DockTreePrimitives::EnsureDockSplitStorage(node);
+    }
+
+    static void RefreshDockGroupLegacyRatios(DockNode* node) {
+        Spherical::DockTreePrimitives::RefreshDockGroupLegacyRatios(node);
+    }
+
+    static std::unique_ptr<DockNode> BuildDockGroupNode(Spherical::DockLayout splitDirection,
+                                                        std::vector<std::unique_ptr<DockNode>> children,
+                                                        std::vector<float> preferredChildExtents) {
+        return Spherical::DockTreePrimitives::BuildDockGroupNode(
+            splitDirection,
+            std::move(children),
+            std::move(preferredChildExtents));
+    }
+
+    static void FlattenSameAxisChildGroups(DockNode* node) {
+        Spherical::DockTreePrimitives::FlattenSameAxisChildGroups(node);
+    }
+
+    static bool IsDockTerminalNode(const DockNode* node) {
+        return Spherical::DockTreePrimitives::IsDockTerminalNode(node);
+    }
+
+    int CountDockNodeLeaves(const DockNode* node) {
+        return Spherical::DockTreePrimitives::CountDockNodeLeaves(node);
+    }
+
+    DockNode* FindDockNodeByPanelTitle(DockNode* node, const std::string& panelTitle) {
+        return Spherical::DockTreePrimitives::FindDockNodeByPanelTitle(node, panelTitle);
+    }
+
+    DockMinSize ComputeDockNodeMinimumSize(const DockNode* node, float leafMinWidth, float leafMinHeight) {
+        return Spherical::DockLayoutOps::ComputeDockNodeMinimumSize(node, leafMinWidth, leafMinHeight);
+    }
+
+    DockMinSize RebalanceDockNodeSplitRatios(DockNode* node, float leafMinWidth, float leafMinHeight) {
+        return Spherical::DockLayoutOps::RebalanceDockNodeSplitRatios(node, leafMinWidth, leafMinHeight);
+    }
+
+    static struct nk_rect GetDockSplitterLineRect(const DockNode* node, std::size_t boundaryIndex, float thickness) {
+        return Spherical::DockSplitterOps::GetDockSplitterLineRect(node, boundaryIndex, thickness);
+    }
+
+    static struct nk_rect GetDockSplitterHitRect(const DockNode* node, std::size_t boundaryIndex, float thickness) {
+        return Spherical::DockSplitterOps::GetDockSplitterHitRect(node, boundaryIndex, thickness);
+    }
+
+    static bool DockTreeContainsNode(const DockNode* root, const DockNode* target) {
+        return Spherical::DockSplitterOps::DockTreeContainsNode(root, target);
+    }
+
+    static bool IsValidDockSplitterRef(const DockNode* root, const DockSplitterRef& ref) {
+        return Spherical::DockSplitterOps::IsValidDockSplitterRef(root, ref);
+    }
+
+    static bool DockSplitterRefsEqual(const DockSplitterRef& a, const DockSplitterRef& b) {
+        return Spherical::DockSplitterOps::DockSplitterRefsEqual(a, b);
+    }
+
+    static void PruneWorkspaceSplitterLinks(WorkspaceContainerState& containerState) {
+        Spherical::DockSplitterOps::PruneWorkspaceSplitterLinks(containerState);
+    }
+
+    static void PruneWorkspaceSplitterIntersections(WorkspaceContainerState& containerState) {
+        Spherical::DockSplitterOps::PruneWorkspaceSplitterIntersections(containerState);
+    }
+
+    static void CollectDockSplitterSegmentGeometry(const DockNode* node,
+                                                  Spherical::DockLayout splitDirection,
+                                                  std::vector<DockSplitterSegmentGeometry>& outSegments) {
+        Spherical::DockSplitterOps::CollectDockSplitterSegmentGeometry(node, splitDirection, outSegments);
+    }
+
+    static std::vector<DockSplitterRef> CollectDockSplitterChain(const DockNode* root,
+                                                                 Spherical::DockLayout splitDirection,
+                                                                 const std::vector<DockSplitterRef>& seedRefs) {
+        return Spherical::DockSplitterOps::CollectDockSplitterChain(root, splitDirection, seedRefs);
+    }
+
+    static std::vector<DockSplitterRef> GetLinkedDockSplitterRefs(WorkspaceContainerState& containerState,
+                                                                  DockNode* node,
+                                                                  std::size_t boundaryIndex) {
+        return Spherical::DockSplitterOps::GetLinkedDockSplitterRefs(containerState, node, boundaryIndex);
+    }
+
+    static bool AreDockSplitterRefsLogicallyUnified(WorkspaceContainerState& containerState,
+                                                    Spherical::DockLayout splitDirection,
+                                                    const DockSplitterRef& first,
+                                                    const DockSplitterRef& second) {
+        return Spherical::DockSplitterOps::AreDockSplitterRefsLogicallyUnified(containerState, splitDirection, first, second);
+    }
+
+    static void RegisterLinkedSplitterGroup(WorkspaceContainerState& containerState,
+                                            Spherical::DockLayout splitDirection,
+                                            std::vector<DockSplitterRef> members) {
+        Spherical::DockSplitterOps::RegisterLinkedSplitterGroup(containerState, splitDirection, std::move(members));
+    }
+
+    static void RegisterSplitterIntersection(WorkspaceContainerState& containerState,
+                                            float x,
+                                            float y,
+                                            std::vector<DockSplitterRef> verticalMembers,
+                                            std::vector<DockSplitterRef> horizontalMembers) {
+        Spherical::DockSplitterOps::RegisterSplitterIntersection(
+            containerState,
+            x,
+            y,
+            std::move(verticalMembers),
+            std::move(horizontalMembers));
+    }
+
+    static DockSplitterHit FindDockSplitterAtPoint(DockNode* node, float x, float y,
+                                                   float visualThickness, float hitThickness) {
+        return Spherical::DockSplitterOps::FindDockSplitterAtPoint(node, x, y, visualThickness, hitThickness);
+    }
+
+    static bool GetDockSplitterClampRange(const DockNode* node,
+                                          std::size_t boundaryIndex,
+                                          float leafMinWidth,
+                                          float leafMinHeight,
+                                          float& outMinPosition,
+                                          float& outMaxPosition) {
+        return Spherical::DockLayoutOps::GetDockSplitterClampRange(
+            node,
+            boundaryIndex,
+            leafMinWidth,
+            leafMinHeight,
+            outMinPosition,
+            outMaxPosition);
+    }
+
+    static float ClampDockSplitterPosition(const DockNode* node, std::size_t boundaryIndex, float proposedPosition,
+                                           float leafMinWidth, float leafMinHeight) {
+        return Spherical::DockLayoutOps::ClampDockSplitterPosition(
+            node,
+            boundaryIndex,
+            proposedPosition,
+            leafMinWidth,
+            leafMinHeight);
+    }
+
+    static float ClampLinkedDockSplitterPosition(WorkspaceContainerState& containerState,
+                                                 DockNode* node,
+                                                 std::size_t boundaryIndex,
+                                                 float proposedPosition,
+                                                 float leafMinWidth,
+                                                 float leafMinHeight) {
+        return Spherical::DockLayoutOps::ClampLinkedDockSplitterPosition(
+            containerState,
+            node,
+            boundaryIndex,
+            proposedPosition,
+            leafMinWidth,
+            leafMinHeight);
+    }
+
+    static void AdjustDockSplitterToPosition(DockNode* node, std::size_t boundaryIndex, float proposedPosition,
+                                             float leafMinWidth, float leafMinHeight) {
+        Spherical::DockLayoutOps::AdjustDockSplitterToPosition(
+            node,
+            boundaryIndex,
+            proposedPosition,
+            leafMinWidth,
+            leafMinHeight);
+    }
+
+    static float GetWorkspaceSplitterFlashAlpha(const WorkspaceContainerState& containerState,
+                                                const DockNode* root,
+                                                const DockNode* splitNode,
+                                                std::size_t boundaryIndex) {
+        return Spherical::DockOverlayOps::GetWorkspaceSplitterFlashAlpha(
+            containerState,
+            root,
+            splitNode,
+            boundaryIndex);
+    }
+
+    static void NormalizeDockNodeLayoutForBounds(DockNode* node, const struct nk_rect& parentRect,
+                                                 float leafMinWidth, float leafMinHeight) {
+        Spherical::DockLayoutOps::NormalizeDockNodeLayoutForBounds(node, parentRect, leafMinWidth, leafMinHeight);
+    }
+
+    static void DrawDockSplitLinesForClipRect(nk_command_buffer* buffer, const DockNode* root, const struct nk_rect& clipRect,
+                                              const DockSplitterHit& activeHit, const DockSplitterHit& hoveredHit) {
+        Spherical::DockLayoutOps::DrawDockSplitLinesForClipRect(buffer, root, clipRect, activeHit, hoveredHit);
+    }
+
+    void ComputeDockNodeRects(DockNode* node, const struct nk_rect& parentRect) {
+        Spherical::DockLayoutOps::ComputeDockNodeRects(node, parentRect);
+    }
+
+    DockNode* FindLeafAtPoint(DockNode* node, float x, float y) {
+        return Spherical::DockSplitterOps::FindLeafAtPoint(node, x, y);
+    }
+
+    DropTargetState::DropZone DetermineDropZone(const struct nk_rect& leafRect, float x, float y) {
+        return Spherical::DockSplitterOps::DetermineDropZone(leafRect, x, y);
+    }
+
+    static bool TryUnifyDockSplitterBoundary(std::unique_ptr<DockNode>& root,
+                                             WorkspaceContainerState& containerState,
+                                             DockNode* activeNode,
+                                             std::size_t activeBoundaryIndex,
+                                             float snapThreshold,
+                                             float leafMinWidth,
+                                             float leafMinHeight,
+                                             DockSplitterHit& outUnifiedHit) {
+        return Spherical::DockReconcileOps::TryUnifyDockSplitterBoundary(
+            root,
+            containerState,
+            activeNode,
+            activeBoundaryIndex,
+            snapThreshold,
+            leafMinWidth,
+            leafMinHeight,
+            outUnifiedHit);
+    }
+
+    static bool CascadeWorkspaceContainerSplitterUnifications(std::unique_ptr<DockNode>& root,
+                                                              WorkspaceContainerState& containerState,
+                                                              const struct nk_rect& rootRect,
+                                                              float snapThreshold,
+                                                              float leafMinWidth,
+                                                              float leafMinHeight) {
+        return Spherical::DockReconcileOps::CascadeWorkspaceContainerSplitterUnifications(
+            root,
+            containerState,
+            rootRect,
+            snapThreshold,
+            leafMinWidth,
+            leafMinHeight);
+    }
+
+    static void ReconcileWorkspaceContainerSplitters(std::unique_ptr<DockNode>& root,
+                                                     WorkspaceContainerState& containerState,
+                                                     const struct nk_rect& rootRect,
+                                                     float leafMinWidth,
+                                                     float leafMinHeight) {
+        Spherical::DockReconcileOps::ReconcileWorkspaceContainerSplitters(
+            root,
+            containerState,
+            rootRect,
+            leafMinWidth,
+            leafMinHeight);
+    }
+
+    void CollapseDockGroups(std::unique_ptr<DockNode>& node) {
+        Spherical::DockReconcileOps::CollapseDockGroups(node);
+    }
+
+    void RemoveDockNodeAndReflow(std::unique_ptr<DockNode>& root, WorkspaceContainerState* containerState, DockNode* nodeToRemove) {
+        Spherical::DockMutationOps::RemoveDockNodeAndReflow(root, containerState, nodeToRemove, &g_splitterDrag);
+    }
+
+    void InsertDockNode(std::unique_ptr<DockNode>& root,
+                        WorkspaceContainerState* containerState,
+                        DockNode* targetLeaf,
+                        std::string newPanelTitle,
+                        DropTargetState::DropZone zone) {
+        Spherical::DockMutationOps::InsertDockNode(
+            root,
+            containerState,
+            targetLeaf,
+            std::move(newPanelTitle),
+            zone,
+            &g_splitterDrag);
+    }
+
     class UIPainterImpl : public Spherical::UIPainter {
     private:
+        struct PanelSubsectionFrameState {
+            std::string hierarchyPath;
+            bool expanded = true;
+            bool parentVisible = true;
+        };
+
         struct PanelBodyStyleSnapshot {
             nk_color background;
             nk_style_item fixedBackground;
@@ -373,6 +1082,7 @@ namespace {
         const char* m_activePanelTitle = nullptr;
         Spherical::UIRect m_currentPanelBounds{};
         Spherical::UIRect m_currentPanelContentBounds{};
+        std::vector<PanelSubsectionFrameState> m_panelSubsectionStack;
         std::vector<nk_color> m_textColorStack;
         std::vector<PanelBodyStyleSnapshot> m_panelBodyColorStack;
         std::vector<StyleItemStateSnapshot> m_panelTitleBarColorStack;
@@ -413,6 +1123,14 @@ namespace {
 
         float control_row_height() const {
             return std::ceil(current_font_height() * 2.0f);
+        }
+
+        float subsection_header_row_height() const {
+            return std::max(control_row_height(), std::ceil(current_font_height() * 1.9f));
+        }
+
+        float subsection_indent_step() const {
+            return std::max(12.0f, std::ceil(current_font_height() * 1.1f));
         }
 
         float button_row_height() const {
@@ -1056,9 +1774,23 @@ namespace {
 
         void end_panel() override;
 
+        bool begin_panel_subsection(const char* title) override;
+
+        void end_panel_subsection() override;
+
         Spherical::UIRect get_current_panel_bounds() const override;
 
         Spherical::UIRect get_current_panel_content_bounds() const override;
+
+        bool begin_workspace_container(const char* title, int x, int y, int width, int height) override;
+
+        void end_workspace_container() override;
+
+        int get_workspace_panel_count(const char* containerTitle) const override;
+
+        Spherical::DockLayout get_workspace_dock_layout(const char* containerTitle) const override;
+
+        void undock_panel_from_workspace(const char* panelTitle) override;
 
         void label(const char* text) override;
 
@@ -1388,482 +2120,13 @@ namespace {
     };
 
     #include "ui/UIPainterPanel.inl"
+    #include "ui/UIPainterWorkspaceContainer.inl"
     #include "ui/UIPainterLayout.inl"
     #include "ui/UIPainterSlider.inl"
     #include "ui/UIPainterButton.inl"
     #include "ui/UIPainterTextInput.inl"
     #include "ui/UIPainterRadio.inl"
 
-    bool IsDeviceSuitable(VkPhysicalDevice device) {
-        uint32_t queueFamilyCount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
-        return queueFamilyCount > 0;
-    }
-
-    bool SelectPhysicalDevice() {
-        uint32_t deviceCount = 0;
-        vkEnumeratePhysicalDevices(g_backend.instance, &deviceCount, nullptr);
-        if (deviceCount == 0) {
-            return false;
-        }
-
-        std::vector<VkPhysicalDevice> devices(deviceCount);
-        vkEnumeratePhysicalDevices(g_backend.instance, &deviceCount, devices.data());
-
-        for (VkPhysicalDevice device : devices) {
-            if (!IsDeviceSuitable(device)) {
-                continue;
-            }
-            VkPhysicalDeviceProperties props;
-            vkGetPhysicalDeviceProperties(device, &props);
-            if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
-                g_backend.physicalDevice = device;
-                return true;
-            }
-        }
-
-        for (VkPhysicalDevice device : devices) {
-            if (IsDeviceSuitable(device)) {
-                g_backend.physicalDevice = device;
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    bool FindQueueFamily() {
-        uint32_t queueFamilyCount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(g_backend.physicalDevice, &queueFamilyCount, nullptr);
-
-        std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-        vkGetPhysicalDeviceQueueFamilyProperties(g_backend.physicalDevice, &queueFamilyCount, queueFamilies.data());
-
-        for (uint32_t i = 0; i < queueFamilyCount; ++i) {
-            if (!(queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
-                continue;
-            }
-            VkBool32 presentSupport = VK_FALSE;
-            vkGetPhysicalDeviceSurfaceSupportKHR(g_backend.physicalDevice, i, g_backend.surface, &presentSupport);
-            if (presentSupport == VK_TRUE) {
-                g_backend.graphicsQueueIndex = i;
-                return true;
-            }
-        }
-        return false;
-    }
-
-    bool CreateLogicalDevice() {
-        const float queuePriority = 1.0f;
-        VkDeviceQueueCreateInfo queueCreateInfo{};
-        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queueCreateInfo.queueFamilyIndex = g_backend.graphicsQueueIndex;
-        queueCreateInfo.queueCount = 1;
-        queueCreateInfo.pQueuePriorities = &queuePriority;
-
-        VkPhysicalDeviceFeatures deviceFeatures{};
-
-        VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingSupport{};
-        dynamicRenderingSupport.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES;
-
-        VkPhysicalDeviceFeatures2 queriedFeatures{};
-        queriedFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-        queriedFeatures.pNext = &dynamicRenderingSupport;
-        vkGetPhysicalDeviceFeatures2(g_backend.physicalDevice, &queriedFeatures);
-
-        if (dynamicRenderingSupport.dynamicRendering != VK_TRUE) {
-            return false;
-        }
-
-        VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingEnabled{};
-        dynamicRenderingEnabled.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES;
-        dynamicRenderingEnabled.dynamicRendering = VK_TRUE;
-
-        const char* deviceExtensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-
-        VkDeviceCreateInfo createInfo{};
-        createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        createInfo.pNext = &dynamicRenderingEnabled;
-        createInfo.queueCreateInfoCount = 1;
-        createInfo.pQueueCreateInfos = &queueCreateInfo;
-        createInfo.pEnabledFeatures = &deviceFeatures;
-        createInfo.enabledExtensionCount = 1;
-        createInfo.ppEnabledExtensionNames = deviceExtensions;
-
-        if (vkCreateDevice(g_backend.physicalDevice, &createInfo, nullptr, &g_backend.device) != VK_SUCCESS) {
-            return false;
-        }
-
-        vkGetDeviceQueue(g_backend.device, g_backend.graphicsQueueIndex, 0, &g_backend.graphicsQueue);
-        return true;
-    }
-
-    void DestroySwapchain() {
-        if (g_backend.device == VK_NULL_HANDLE) {
-            return;
-        }
-
-        for (VkImageView view : g_backend.swapchainImageViews) {
-            if (view != VK_NULL_HANDLE) {
-                vkDestroyImageView(g_backend.device, view, nullptr);
-            }
-        }
-        g_backend.swapchainImageViews.clear();
-        g_backend.swapchainImages.clear();
-        g_backend.swapchainImageLayouts.clear();
-
-        if (g_backend.swapchain != VK_NULL_HANDLE) {
-            vkDestroySwapchainKHR(g_backend.device, g_backend.swapchain, nullptr);
-            g_backend.swapchain = VK_NULL_HANDLE;
-        }
-    }
-
-    bool CreateSwapchain() {
-        VkSurfaceCapabilitiesKHR capabilities{};
-        if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_backend.physicalDevice, g_backend.surface, &capabilities) != VK_SUCCESS) {
-            return false;
-        }
-
-        g_backend.swapchainExtent = capabilities.currentExtent;
-        if (g_backend.swapchainExtent.width == UINT32_MAX) {
-            int width = 0;
-            int height = 0;
-            SDL_GetWindowSizeInPixels(g_backend.window, &width, &height);
-            g_backend.swapchainExtent.width = static_cast<uint32_t>(std::max(1, width));
-            g_backend.swapchainExtent.height = static_cast<uint32_t>(std::max(1, height));
-        }
-
-        uint32_t formatCount = 0;
-        vkGetPhysicalDeviceSurfaceFormatsKHR(g_backend.physicalDevice, g_backend.surface, &formatCount, nullptr);
-        if (formatCount == 0) {
-            return false;
-        }
-
-        std::vector<VkSurfaceFormatKHR> formats(formatCount);
-        vkGetPhysicalDeviceSurfaceFormatsKHR(g_backend.physicalDevice, g_backend.surface, &formatCount, formats.data());
-
-        VkSurfaceFormatKHR surfaceFormat = formats[0];
-        for (const VkSurfaceFormatKHR& candidate : formats) {
-            if (candidate.format == VK_FORMAT_B8G8R8A8_UNORM) {
-                surfaceFormat = candidate;
-                break;
-            }
-        }
-        g_backend.swapchainFormat = surfaceFormat.format;
-
-        uint32_t presentModeCount = 0;
-        vkGetPhysicalDeviceSurfacePresentModesKHR(g_backend.physicalDevice, g_backend.surface, &presentModeCount, nullptr);
-        std::vector<VkPresentModeKHR> presentModes(presentModeCount);
-        vkGetPhysicalDeviceSurfacePresentModesKHR(g_backend.physicalDevice, g_backend.surface, &presentModeCount, presentModes.data());
-
-        VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
-        if (g_backend.preferImmediatePresent) {
-            for (VkPresentModeKHR mode : presentModes) {
-                if (mode == VK_PRESENT_MODE_IMMEDIATE_KHR) {
-                    presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-                    break;
-                }
-            }
-        }
-
-        uint32_t minImageCount = std::max(capabilities.minImageCount, 2u);
-        if (capabilities.maxImageCount > 0) {
-            minImageCount = std::min(minImageCount, capabilities.maxImageCount);
-        }
-
-        VkSwapchainCreateInfoKHR createInfo{};
-        createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-        createInfo.surface = g_backend.surface;
-        createInfo.minImageCount = minImageCount;
-        createInfo.imageFormat = surfaceFormat.format;
-        createInfo.imageColorSpace = surfaceFormat.colorSpace;
-        createInfo.imageExtent = g_backend.swapchainExtent;
-        createInfo.imageArrayLayers = 1;
-        createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-        createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        createInfo.preTransform = capabilities.currentTransform;
-        createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-        createInfo.presentMode = presentMode;
-        createInfo.clipped = VK_TRUE;
-
-        if (vkCreateSwapchainKHR(g_backend.device, &createInfo, nullptr, &g_backend.swapchain) != VK_SUCCESS) {
-            return false;
-        }
-
-        uint32_t imageCount = 0;
-        vkGetSwapchainImagesKHR(g_backend.device, g_backend.swapchain, &imageCount, nullptr);
-        g_backend.swapchainImages.resize(imageCount);
-        vkGetSwapchainImagesKHR(g_backend.device, g_backend.swapchain, &imageCount, g_backend.swapchainImages.data());
-        g_backend.swapchainImageLayouts.assign(imageCount, VK_IMAGE_LAYOUT_UNDEFINED);
-
-        g_backend.swapchainImageViews.resize(imageCount);
-        for (size_t i = 0; i < imageCount; ++i) {
-            VkImageViewCreateInfo viewCreateInfo{};
-            viewCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            viewCreateInfo.image = g_backend.swapchainImages[i];
-            viewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            viewCreateInfo.format = g_backend.swapchainFormat;
-            viewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            viewCreateInfo.subresourceRange.baseMipLevel = 0;
-            viewCreateInfo.subresourceRange.levelCount = 1;
-            viewCreateInfo.subresourceRange.baseArrayLayer = 0;
-            viewCreateInfo.subresourceRange.layerCount = 1;
-
-            if (vkCreateImageView(g_backend.device, &viewCreateInfo, nullptr, &g_backend.swapchainImageViews[i]) != VK_SUCCESS) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    bool RecreateSwapchain() {
-        if (g_backend.device == VK_NULL_HANDLE) {
-            return false;
-        }
-
-        int width = 0;
-        int height = 0;
-        SDL_GetWindowSizeInPixels(g_backend.window, &width, &height);
-        if (width <= 0 || height <= 0) {
-            return false;
-        }
-
-        vkDeviceWaitIdle(g_backend.device);
-        DestroySwapchain();
-        return CreateSwapchain();
-    }
-
-    bool CreateCommandPoolAndBuffer() {
-        VkCommandPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        poolInfo.queueFamilyIndex = g_backend.graphicsQueueIndex;
-        poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-
-        if (vkCreateCommandPool(g_backend.device, &poolInfo, nullptr, &g_backend.commandPool) != VK_SUCCESS) {
-            return false;
-        }
-
-        VkCommandBufferAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocInfo.commandPool = g_backend.commandPool;
-        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocInfo.commandBufferCount = 1;
-
-        if (vkAllocateCommandBuffers(g_backend.device, &allocInfo, &g_backend.commandBuffer) != VK_SUCCESS) {
-            return false;
-        }
-
-        return true;
-    }
-
-    bool CreateSyncPrimitives() {
-        VkSemaphoreCreateInfo semaphoreInfo{};
-        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-
-        VkFenceCreateInfo fenceInfo{};
-        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-
-        if (vkCreateSemaphore(g_backend.device, &semaphoreInfo, nullptr, &g_backend.imageAvailableSemaphore) != VK_SUCCESS ||
-            vkCreateSemaphore(g_backend.device, &semaphoreInfo, nullptr, &g_backend.renderFinishedSemaphore) != VK_SUCCESS ||
-            vkCreateFence(g_backend.device, &fenceInfo, nullptr, &g_backend.inFlightFence) != VK_SUCCESS) {
-            return false;
-        }
-
-        return true;
-    }
-
-    bool BeginFrameCommandBuffer() {
-        VkCommandBufferBeginInfo beginInfo{};
-        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-
-        if (vkBeginCommandBuffer(g_backend.commandBuffer, &beginInfo) != VK_SUCCESS) {
-            return false;
-        }
-
-        VkImageMemoryBarrier toColorAttachment{};
-        toColorAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        toColorAttachment.oldLayout = g_backend.swapchainImageLayouts[g_backend.currentImageIndex];
-        toColorAttachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        toColorAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toColorAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toColorAttachment.image = g_backend.swapchainImages[g_backend.currentImageIndex];
-        toColorAttachment.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        toColorAttachment.subresourceRange.baseMipLevel = 0;
-        toColorAttachment.subresourceRange.levelCount = 1;
-        toColorAttachment.subresourceRange.baseArrayLayer = 0;
-        toColorAttachment.subresourceRange.layerCount = 1;
-        toColorAttachment.srcAccessMask = 0;
-        toColorAttachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-        vkCmdPipelineBarrier(
-            g_backend.commandBuffer,
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            0,
-            0, nullptr,
-            0, nullptr,
-            1, &toColorAttachment);
-
-        g_backend.swapchainImageLayouts[g_backend.currentImageIndex] = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        return true;
-    }
-
-    bool EndFrameCommandBuffer() {
-        VkImageMemoryBarrier toPresent{};
-        toPresent.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        toPresent.oldLayout = g_backend.swapchainImageLayouts[g_backend.currentImageIndex];
-        toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        toPresent.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toPresent.image = g_backend.swapchainImages[g_backend.currentImageIndex];
-        toPresent.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        toPresent.subresourceRange.baseMipLevel = 0;
-        toPresent.subresourceRange.levelCount = 1;
-        toPresent.subresourceRange.baseArrayLayer = 0;
-        toPresent.subresourceRange.layerCount = 1;
-        toPresent.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        toPresent.dstAccessMask = 0;
-
-        vkCmdPipelineBarrier(
-            g_backend.commandBuffer,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-            0,
-            0, nullptr,
-            0, nullptr,
-            1, &toPresent);
-
-        g_backend.swapchainImageLayouts[g_backend.currentImageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        return vkEndCommandBuffer(g_backend.commandBuffer) == VK_SUCCESS;
-    }
-
-    bool PresentFrame() {
-        VkPresentInfoKHR presentInfo{};
-        presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores = &g_backend.renderFinishedSemaphore;
-        presentInfo.swapchainCount = 1;
-        presentInfo.pSwapchains = &g_backend.swapchain;
-        presentInfo.pImageIndices = &g_backend.currentImageIndex;
-
-        const VkResult result = vkQueuePresentKHR(g_backend.graphicsQueue, &presentInfo);
-        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
-            return RecreateSwapchain();
-        }
-        return result == VK_SUCCESS;
-    }
-
-    bool InitializeBackend(const Spherical::SphericalInitInfo& info) {
-        if (g_backend.initialized) {
-            return true;
-        }
-
-        g_backend.window = info.window;
-        g_backend.preferImmediatePresent = info.preferImmediatePresent;
-
-        SDL_Vulkan_LoadLibrary(nullptr);
-
-        VkApplicationInfo appInfo{};
-        appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        appInfo.pApplicationName = "SPHERICAL";
-        appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.pEngineName = "SPHERICAL";
-        appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.apiVersion = VK_API_VERSION_1_4;
-
-        uint32_t extensionCount = 0;
-        const char* const* extensionNames = SDL_Vulkan_GetInstanceExtensions(&extensionCount);
-        if (extensionNames == nullptr || extensionCount == 0) {
-            return false;
-        }
-
-        VkInstanceCreateInfo createInfo{};
-        createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-        createInfo.pApplicationInfo = &appInfo;
-        createInfo.enabledExtensionCount = extensionCount;
-        createInfo.ppEnabledExtensionNames = extensionNames;
-
-        if (vkCreateInstance(&createInfo, nullptr, &g_backend.instance) != VK_SUCCESS) {
-            return false;
-        }
-
-        if (!SDL_Vulkan_CreateSurface(g_backend.window, g_backend.instance, nullptr, &g_backend.surface)) {
-            return false;
-        }
-
-        if (!SelectPhysicalDevice()) {
-            return false;
-        }
-
-        if (!FindQueueFamily()) {
-            return false;
-        }
-
-        if (!CreateLogicalDevice()) {
-            return false;
-        }
-
-        if (!CreateSwapchain()) {
-            return false;
-        }
-
-        if (!CreateCommandPoolAndBuffer()) {
-            return false;
-        }
-
-        if (!CreateSyncPrimitives()) {
-            return false;
-        }
-
-        g_backend.initialized = true;
-        return true;
-    }
-
-    void ShutdownBackend() {
-        if (g_backend.device != VK_NULL_HANDLE) {
-            vkDeviceWaitIdle(g_backend.device);
-        }
-
-        if (g_backend.inFlightFence != VK_NULL_HANDLE) {
-            vkDestroyFence(g_backend.device, g_backend.inFlightFence, nullptr);
-            g_backend.inFlightFence = VK_NULL_HANDLE;
-        }
-        if (g_backend.renderFinishedSemaphore != VK_NULL_HANDLE) {
-            vkDestroySemaphore(g_backend.device, g_backend.renderFinishedSemaphore, nullptr);
-            g_backend.renderFinishedSemaphore = VK_NULL_HANDLE;
-        }
-        if (g_backend.imageAvailableSemaphore != VK_NULL_HANDLE) {
-            vkDestroySemaphore(g_backend.device, g_backend.imageAvailableSemaphore, nullptr);
-            g_backend.imageAvailableSemaphore = VK_NULL_HANDLE;
-        }
-
-        DestroySwapchain();
-
-        if (g_backend.commandPool != VK_NULL_HANDLE) {
-            vkDestroyCommandPool(g_backend.device, g_backend.commandPool, nullptr);
-            g_backend.commandPool = VK_NULL_HANDLE;
-            g_backend.commandBuffer = VK_NULL_HANDLE;
-        }
-
-        if (g_backend.device != VK_NULL_HANDLE) {
-            vkDestroyDevice(g_backend.device, nullptr);
-            g_backend.device = VK_NULL_HANDLE;
-        }
-
-        if (g_backend.surface != VK_NULL_HANDLE) {
-            vkDestroySurfaceKHR(g_backend.instance, g_backend.surface, nullptr);
-            g_backend.surface = VK_NULL_HANDLE;
-        }
-
-        if (g_backend.instance != VK_NULL_HANDLE) {
-            vkDestroyInstance(g_backend.instance, nullptr);
-            g_backend.instance = VK_NULL_HANDLE;
-        }
-
-        g_backend = {};
-    }
 }
 
 namespace Spherical {
@@ -1877,234 +2140,96 @@ namespace Spherical {
         return static_cast<float>(len) * (height * 0.54f);
     }
 
-    namespace UIState {
-        static float colorR = 0.9f;
-        static float colorG = 0.2f;
-        static float colorB = 0.2f;
-        static int clickCounter = 0;
-        static char textInput[65] = "Hello, World!";
-        static int mouseX = 0;
-        static int mouseY = 0;
-        static double frameTime = 0.0;
-        static std::chrono::high_resolution_clock::time_point lastFrameTime;
-        static std::array<double, 60> frameTimes = {};
-        static size_t frameIndex = 0;
+    static Runtime::UiState g_runtimeUiState{};
 
-        static bool isLoadingProject = false;
-        static int projectsLoaded = 0;
-        static std::chrono::high_resolution_clock::time_point loadStartTime;
+    static void RuntimeDrawCenterMarker(nk_context* context, const VkExtent2D& framebufferExtent, void* /*userData*/) {
+        DrawCenterMarkerOverlay(context, framebufferExtent);
+    }
 
-        double GetFPS() {
-            double totalMs = 0;
-            for (double t : frameTimes) {
-                totalMs += t;
-            }
-            double avgMs = totalMs / frameTimes.size();
-            return avgMs > 0 ? 1000.0 / avgMs : 0.0;
-        }
-
-        void UpdateFrameTime() {
-            const auto now = std::chrono::high_resolution_clock::now();
-            if (lastFrameTime.time_since_epoch().count() == 0) {
-                lastFrameTime = now;
-                return;
-            }
-
-            frameTime = std::chrono::duration<double, std::milli>(now - lastFrameTime).count();
-            lastFrameTime = now;
-            frameTimes[frameIndex] = frameTime;
-            frameIndex = (frameIndex + 1) % frameTimes.size();
+    static void RuntimeBuildUi(nk_context* context, const VkExtent2D& framebufferExtent, void* /*userData*/) {
+        g_cursorState.requested = CursorRequest::Default;
+        if (g_uiBuildCallback != nullptr) {
+            UIPainterImpl painter(context, framebufferExtent);
+            g_uiBuildCallback(painter);
         }
     }
 
-    static void RenderUIToCommandBuffer(VkCommandBuffer cmd) {
-        const VkExtent2D framebufferExtent = VulkanRenderer::GetFramebufferExtent();
-        const float width = static_cast<float>(framebufferExtent.width);
-        const float height = static_cast<float>(framebufferExtent.height);
-        if (width <= 0.0f || height <= 0.0f) {
-            return;
-        }
+    static void RuntimeDrawDockPreview(nk_context* context, const VkExtent2D& framebufferExtent, void* /*userData*/) {
+        DrawWorkspaceDockPreviewOverlay(context, framebufferExtent);
+    }
 
-        DrawCenterMarkerOverlay(&ctx, framebufferExtent);
-
-        // Call the registered UI build callback, or provide a default fallback
-        g_cursorState.requested = CursorRequest::Default;
-        if (g_uiBuildCallback) {
-            UIPainterImpl painter(&ctx, framebufferExtent);
-            g_uiBuildCallback(painter);
-        }
+    static void RuntimeApplyCursor(void* /*userData*/) {
         ApplyRequestedCursor();
+    }
 
-        SyncWindowTextInputState(&ctx);
+    static void RuntimeSyncTextInput(nk_context* context, void* /*userData*/) {
+        SyncWindowTextInputState(context);
+    }
 
-        void* vertPtr = nullptr;
-        void* indexPtr = nullptr;
-        size_t vertCapacity = 0;
-        size_t indexCapacity = 0;
-
-        if (!VulkanRenderer::MapVertexBuffer(&vertPtr, &vertCapacity)) {
-            nk_clear(&ctx);
-            return;
+    static RenderWatchdogStage ToWatchdogStage(Runtime::StageId stage) {
+        switch (stage) {
+            case Runtime::StageId::NewFrameEvents:
+                return RenderWatchdogStage::NewFrameEvents;
+            case Runtime::StageId::NewFrameTaskPoll:
+                return RenderWatchdogStage::NewFrameTaskPoll;
+            case Runtime::StageId::WaitFence:
+                return RenderWatchdogStage::WaitFence;
+            case Runtime::StageId::AcquireImage:
+                return RenderWatchdogStage::AcquireImage;
+            case Runtime::StageId::BuildUi:
+                return RenderWatchdogStage::BuildUi;
+            case Runtime::StageId::EndCommandBuffer:
+                return RenderWatchdogStage::EndCommandBuffer;
+            case Runtime::StageId::Submit:
+                return RenderWatchdogStage::Submit;
+            case Runtime::StageId::Present:
+                return RenderWatchdogStage::Present;
+            case Runtime::StageId::Idle:
+            default:
+                return RenderWatchdogStage::Idle;
         }
-        if (!VulkanRenderer::MapIndexBuffer(&indexPtr, &indexCapacity)) {
-            VulkanRenderer::UnmapBuffers();
-            nk_clear(&ctx);
-            return;
-        }
+    }
 
-        nk_buffer cmds{};
-        nk_buffer verts{};
-        nk_buffer idxs{};
-        nk_buffer_init_fixed(&cmds, nk_cmd_buffer_storage.data(), nk_cmd_buffer_storage.size());
-        nk_buffer_init_fixed(&verts, vertPtr, vertCapacity);
-        nk_buffer_init_fixed(&idxs, indexPtr, indexCapacity);
+    static void RuntimeSetStage(Runtime::StageId stage, void* /*userData*/) {
+        SetRenderWatchdogStage(ToWatchdogStage(stage));
+    }
 
-        static const nk_draw_vertex_layout_element vertexLayout[] = {
-            {NK_VERTEX_POSITION, NK_FORMAT_FLOAT, NK_OFFSETOF(struct SphericalNkVertex, position)},
-            {NK_VERTEX_TEXCOORD, NK_FORMAT_FLOAT, NK_OFFSETOF(struct SphericalNkVertex, uv)},
-            {NK_VERTEX_COLOR, NK_FORMAT_R8G8B8A8, NK_OFFSETOF(struct SphericalNkVertex, col)},
-            {NK_VERTEX_LAYOUT_END}
-        };
-
-        nk_draw_null_texture nullTexture{};
-        nullTexture.texture = VulkanRenderer::GetNullTexture();
-        nullTexture.uv = nk_vec2(0.5f, 0.5f);
-
-        nk_convert_config config{};
-        config.global_alpha = 1.0f;
-        config.shape_AA = NK_ANTI_ALIASING_ON;
-        config.line_AA = NK_ANTI_ALIASING_ON;
-        config.arc_segment_count = 22;
-        config.circle_segment_count = 22;
-        config.curve_segment_count = 22;
-        config.vertex_layout = vertexLayout;
-        config.vertex_size = sizeof(SphericalNkVertex);
-        config.vertex_alignment = NK_ALIGNOF(struct SphericalNkVertex);
-        config.tex_null = nullTexture;
-
-        const nk_flags convertResult = nk_convert(&ctx, &cmds, &verts, &idxs, &config);
-
-        VulkanRenderer::UnmapBuffers();
-        if (convertResult != NK_CONVERT_SUCCESS) {
-            nk_clear(&ctx);
-            return;
-        }
-
-        float proj[16];
-        const float l = 0.0f;
-        const float r = width;
-        const float t = 0.0f;
-        const float b = height;
-        std::memset(proj, 0, sizeof(proj));
-        proj[0] = 2.0f / (r - l);
-        proj[5] = 2.0f / (b - t);
-        proj[10] = -1.0f;
-        proj[12] = -(r + l) / (r - l);
-        proj[13] = -(b + t) / (b - t);
-        proj[15] = 1.0f;
-
-        VulkanRenderer::BeginUIPass(cmd, VK_NULL_HANDLE, proj);
-
-        uint32_t indexOffset = 0;
-        const nk_draw_command* drawCmd = nullptr;
-        nk_draw_foreach(drawCmd, &ctx, &cmds) {
-            if (drawCmd->elem_count == 0) {
-                continue;
-            }
-
-            int scissorX = static_cast<int>(drawCmd->clip_rect.x);
-            int scissorY = static_cast<int>(drawCmd->clip_rect.y);
-            int scissorW = static_cast<int>(drawCmd->clip_rect.w);
-            int scissorH = static_cast<int>(drawCmd->clip_rect.h);
-
-            scissorX = std::max(0, scissorX);
-            scissorY = std::max(0, scissorY);
-            scissorW = std::min(scissorW, static_cast<int>(width) - scissorX);
-            scissorH = std::min(scissorH, static_cast<int>(height) - scissorY);
-
-            if (scissorW > 0 && scissorH > 0) {
-                VulkanRenderer::DrawUICommand(cmd, drawCmd->texture, drawCmd->elem_count, indexOffset,
-                                              scissorX, scissorY, scissorW, scissorH);
-            }
-
-            indexOffset += drawCmd->elem_count;
-        }
-
-        VulkanRenderer::EndUIPass(cmd);
-        nk_clear(&ctx);
+    static void RuntimeLogSync(const char* stage, VkResult result, uint64_t frameId, void* /*userData*/) {
+        LogRenderSyncEvent(stage, result, frameId);
     }
 
     bool Init(const SphericalInitInfo& info) {
-        if (initialized || info.window == nullptr) {
-            return false;
-        }
-
-        if (!InitializeBackend(info)) {
-            ShutdownBackend();
-            return false;
-        }
-
-        VulkanRenderer::RendererInitInfo rendererInfo{};
-        rendererInfo.device = g_backend.device;
-        rendererInfo.physicalDevice = g_backend.physicalDevice;
-        rendererInfo.graphicsQueue = g_backend.graphicsQueue;
-        rendererInfo.commandPool = g_backend.commandPool;
-        rendererInfo.colorAttachmentFormat = g_backend.swapchainFormat;
-        rendererInfo.colorAttachmentView = g_backend.swapchainImageViews.empty() ? VK_NULL_HANDLE : g_backend.swapchainImageViews[0];
-        rendererInfo.framebufferExtent = g_backend.swapchainExtent;
-
-        if (!VulkanRenderer::Init(rendererInfo)) {
-            ShutdownBackend();
-            return false;
-        }
-
-        std::string resolvedFontPath;
-        if (info.fontPath != nullptr && info.fontPath[0] != '\0') {
-            resolvedFontPath = info.fontPath;
-        } 
-
-        const char* fontPath = resolvedFontPath.empty() ? nullptr : resolvedFontPath.c_str();
-        const float uiScale = ResolveUiScale(info, g_backend.window);
-        if (!FontRenderer::Init(g_backend.device, g_backend.physicalDevice,
-                                g_backend.graphicsQueue, g_backend.commandPool,
-                                fontPath, uiScale, info.fontRenderMode)) {
-            VulkanRenderer::Shutdown();
-            ShutdownBackend();
-            return false;
-        }
-
-        const VkImageView atlasView = FontRenderer::GetAtlasImageView();
-        if (atlasView != VK_NULL_HANDLE) {
-            VulkanRenderer::UpdateFontTexture(atlasView);
-        }
-
-        static const size_t MAX_NUKLEAR_MEMORY = 16 * 1024 * 1024;
-        static const size_t MAX_NUKLEAR_DRAW_COMMAND_MEMORY = 4 * 1024 * 1024;
-        if (nk_buffer_storage.size() != MAX_NUKLEAR_MEMORY) {
-            nk_buffer_storage.resize(MAX_NUKLEAR_MEMORY);
-        }
-        if (nk_cmd_buffer_storage.size() != MAX_NUKLEAR_DRAW_COMMAND_MEMORY) {
-            nk_cmd_buffer_storage.resize(MAX_NUKLEAR_DRAW_COMMAND_MEMORY);
-        }
-
-        s_fallbackFont.height = std::ceil(12.0f * uiScale);
         s_fallbackFont.width = FallbackFontWidth;
         s_fallbackFont.userdata = nk_handle_ptr(nullptr);
 
-        nk_user_font* fontToUse = FontRenderer::GetFontHandle(FontStyle::Regular);
-        if (fontToUse == nullptr) {
-            fontToUse = &s_fallbackFont;
+        Runtime::LifecycleState lifecycleState{};
+        lifecycleState.backend = &g_backend;
+        lifecycleState.ctx = &ctx;
+        lifecycleState.initialized = &initialized;
+        lifecycleState.textInputWasActive = &g_textInputWasActive;
+        lifecycleState.nkBufferStorage = &nk_buffer_storage;
+        lifecycleState.nkCmdBufferStorage = &nk_cmd_buffer_storage;
+        lifecycleState.fallbackFont = &s_fallbackFont;
+
+        Runtime::LifecycleHooks lifecycleHooks{};
+        lifecycleHooks.resolveUiScale = [](const SphericalInitInfo& initInfo, SDL_Window* window, void* /*userData*/) {
+            return ResolveUiScale(initInfo, window);
+        };
+        lifecycleHooks.resetRuntimeDiagLog = [](void* /*userData*/) {
+            ResetRuntimeDiagLog();
+        };
+        lifecycleHooks.startRenderWatchdog = [](void* /*userData*/) {
+            StartRenderWatchdog();
+        };
+        lifecycleHooks.stopRenderWatchdog = [](void* /*userData*/) {
+            StopRenderWatchdog();
+        };
+
+        if (!Runtime::InitLifecycle(info, lifecycleState, lifecycleHooks)) {
+            return false;
         }
 
-        nk_init_fixed(&ctx, nk_buffer_storage.data(), nk_buffer_storage.size(), fontToUse);
-        if (g_backend.window != nullptr && SDL_TextInputActive(g_backend.window)) {
-            SDL_StopTextInput(g_backend.window);
-        }
-        g_textInputWasActive = false;
-        UIState::lastFrameTime = std::chrono::high_resolution_clock::now();
-
-        TaskRunner::Init();
-        initialized = true;
+        Runtime::PrimeFrameTimer(g_runtimeUiState);
         return true;
     }
 
@@ -2113,172 +2238,135 @@ namespace Spherical {
             return;
         }
 
-        UIState::UpdateFrameTime();
-        nk_input_begin(&ctx);
-
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-            switch (event.type) {
-                case SDL_EVENT_MOUSE_MOTION: {
-                    const int x = static_cast<int>(event.motion.x);
-                    const int y = static_cast<int>(event.motion.y);
-                    UIState::mouseX = x;
-                    UIState::mouseY = y;
-                    nk_input_motion(&ctx, x, y);
-                    break;
-                }
-                case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                case SDL_EVENT_MOUSE_BUTTON_UP: {
-                    const int x = static_cast<int>(event.button.x);
-                    const int y = static_cast<int>(event.button.y);
-                        
-                    int button = NK_BUTTON_LEFT;
-                    if (event.button.button == SDL_BUTTON_MIDDLE) {
-                        button = NK_BUTTON_MIDDLE;
-                    } else if (event.button.button == SDL_BUTTON_RIGHT) {
-                        button = NK_BUTTON_RIGHT;
-                    }
-                        
-                    const bool isDown = (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);    
-                    nk_input_button(&ctx, static_cast<nk_buttons>(button), x, y, isDown);
-                    // SDK-side fix: when the left button is pressed, make Nuklear compute motion
-                    // deltas relative to the click position by setting input.prev to clicked_pos.
-                    // This gives absolute drag movement and mitigates scrollbar cursor lag
-                    //if (isDown && button == NK_BUTTON_LEFT) {
-                        //ctx.input.mouse.buttons is accessible here; set prev to clicked_pos
-                        //ctx.input.mouse.prev.x = ctx.input.mouse.buttons[NK_BUTTON_LEFT].clicked_pos.x;
-                        //ctx.input.mouse.prev.y = ctx.input.mouse.buttons[NK_BUTTON_LEFT].clicked_pos.y;
-                    //}
-                        
-                    break;
-                }
-                case SDL_EVENT_MOUSE_WHEEL: {
-                    if (event.wheel.y != 0) {
-                        nk_input_scroll(&ctx, nk_vec2(0, event.wheel.y * 5.0f));
-                    }
-                    if (event.wheel.x != 0) {
-                        nk_input_scroll(&ctx, nk_vec2(event.wheel.x * 5.0f, 0));
-                    }
-                    break;
-                }
-                case SDL_EVENT_KEY_DOWN:
-                case SDL_EVENT_KEY_UP: {
-                    const bool isDown = (event.type == SDL_EVENT_KEY_DOWN);
-                    if (event.key.key == SDLK_LSHIFT || event.key.key == SDLK_RSHIFT) {
-                        nk_input_key(&ctx, NK_KEY_SHIFT, isDown);
-                    } else if (event.key.key == SDLK_LCTRL || event.key.key == SDLK_RCTRL) {
-                        nk_input_key(&ctx, NK_KEY_CTRL, isDown);
-                    } else if (event.key.key == SDLK_DELETE) {
-                        nk_input_key(&ctx, NK_KEY_DEL, isDown);
-                    } else if (event.key.key == SDLK_RETURN) {
-                        nk_input_key(&ctx, NK_KEY_ENTER, isDown);
-                    } else if (event.key.key == SDLK_TAB) {
-                        nk_input_key(&ctx, NK_KEY_TAB, isDown);
-                    } else if (event.key.key == SDLK_BACKSPACE) {
-                        nk_input_key(&ctx, NK_KEY_BACKSPACE, isDown);
-                    } else if (event.key.key == SDLK_UP) {
-                        nk_input_key(&ctx, NK_KEY_UP, isDown);
-                    } else if (event.key.key == SDLK_DOWN) {
-                        nk_input_key(&ctx, NK_KEY_DOWN, isDown);
-                    } else if (event.key.key == SDLK_LEFT) {
-                        nk_input_key(&ctx, NK_KEY_LEFT, isDown);
-                    } else if (event.key.key == SDLK_RIGHT) {
-                        nk_input_key(&ctx, NK_KEY_RIGHT, isDown);
-                    } else if (event.key.key == SDLK_HOME) {
-                        nk_input_key(&ctx, NK_KEY_TEXT_START, isDown);
-                    } else if (event.key.key == SDLK_END) {
-                        nk_input_key(&ctx, NK_KEY_TEXT_END, isDown);
-                    }
-                    break;
-                }
-                case SDL_EVENT_TEXT_INPUT: {
-                    nk_glyph glyph;
-                    std::memset(glyph, 0, sizeof(glyph));
-                    std::strncpy(reinterpret_cast<char*>(glyph), event.text.text, NK_UTF_SIZE - 1);
-                    nk_input_glyph(&ctx, glyph);
-                    break;
-                }
-                default:
-                    break;
-            }
-        }
-
-        nk_input_end(&ctx);
-        TaskRunner::Poll();
+        Runtime::RuntimeFacadeContext runtimeContext{};
+        runtimeContext.ctx = &ctx;
+        runtimeContext.backend = &g_backend;
+        runtimeContext.nkCmdBufferStorage = &nk_cmd_buffer_storage;
+        runtimeContext.frameCounter = &g_renderFrameCounter;
+        runtimeContext.uiState = &g_runtimeUiState;
+        runtimeContext.uiHooks.drawCenterMarker = RuntimeDrawCenterMarker;
+        runtimeContext.uiHooks.buildUi = RuntimeBuildUi;
+        runtimeContext.uiHooks.drawDockPreview = RuntimeDrawDockPreview;
+        runtimeContext.uiHooks.applyCursor = RuntimeApplyCursor;
+        runtimeContext.uiHooks.syncTextInput = RuntimeSyncTextInput;
+        runtimeContext.setStage = RuntimeSetStage;
+        runtimeContext.logSync = RuntimeLogSync;
+        Runtime::RunNewFrame(runtimeContext, initialized);
     }
 
     void Render() {
-        if (!initialized || !g_backend.initialized) {
-            return;
-        }
-
-        vkWaitForFences(g_backend.device, 1, &g_backend.inFlightFence, VK_TRUE, UINT64_MAX);
-        vkResetFences(g_backend.device, 1, &g_backend.inFlightFence);
-
-        const VkResult acquireResult = vkAcquireNextImageKHR(
-            g_backend.device,
-            g_backend.swapchain,
-            UINT64_MAX,
-            g_backend.imageAvailableSemaphore,
-            VK_NULL_HANDLE,
-            &g_backend.currentImageIndex);
-
-        if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR || acquireResult == VK_SUBOPTIMAL_KHR) {
-            RecreateSwapchain();
-            return;
-        }
-        if (acquireResult != VK_SUCCESS) {
-            return;
-        }
-
-        vkResetCommandBuffer(g_backend.commandBuffer, 0);
-        if (!BeginFrameCommandBuffer()) {
-            return;
-        }
-
-        VulkanRenderer::SetRenderTarget(g_backend.swapchainImageViews[g_backend.currentImageIndex], g_backend.swapchainExtent);
-        RenderUIToCommandBuffer(g_backend.commandBuffer);
-
-        if (!EndFrameCommandBuffer()) {
-            return;
-        }
-
-        VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-        VkSubmitInfo submitInfo{};
-        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.waitSemaphoreCount = 1;
-        submitInfo.pWaitSemaphores = &g_backend.imageAvailableSemaphore;
-        submitInfo.pWaitDstStageMask = waitStages;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &g_backend.commandBuffer;
-        submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores = &g_backend.renderFinishedSemaphore;
-
-        if (vkQueueSubmit(g_backend.graphicsQueue, 1, &submitInfo, g_backend.inFlightFence) != VK_SUCCESS) {
-            return;
-        }
-
-        PresentFrame();
+        Runtime::RuntimeFacadeContext runtimeContext{};
+        runtimeContext.ctx = &ctx;
+        runtimeContext.backend = &g_backend;
+        runtimeContext.nkCmdBufferStorage = &nk_cmd_buffer_storage;
+        runtimeContext.frameCounter = &g_renderFrameCounter;
+        runtimeContext.uiState = &g_runtimeUiState;
+        runtimeContext.uiHooks.drawCenterMarker = RuntimeDrawCenterMarker;
+        runtimeContext.uiHooks.buildUi = RuntimeBuildUi;
+        runtimeContext.uiHooks.drawDockPreview = RuntimeDrawDockPreview;
+        runtimeContext.uiHooks.applyCursor = RuntimeApplyCursor;
+        runtimeContext.uiHooks.syncTextInput = RuntimeSyncTextInput;
+        runtimeContext.setStage = RuntimeSetStage;
+        runtimeContext.logSync = RuntimeLogSync;
+        Runtime::RunRender(runtimeContext, initialized);
     }
 
     void Shutdown() {
-        if (initialized) {
-            nk_clear(&ctx);
-        }
+        Runtime::LifecycleState lifecycleState{};
+        lifecycleState.backend = &g_backend;
+        lifecycleState.ctx = &ctx;
+        lifecycleState.initialized = &initialized;
+        lifecycleState.textInputWasActive = &g_textInputWasActive;
+        lifecycleState.nkBufferStorage = &nk_buffer_storage;
+        lifecycleState.nkCmdBufferStorage = &nk_cmd_buffer_storage;
+        lifecycleState.fallbackFont = &s_fallbackFont;
 
-        TaskRunner::Shutdown();
-        if (g_backend.window != nullptr && SDL_TextInputActive(g_backend.window)) {
-            SDL_StopTextInput(g_backend.window);
-        }
-        g_textInputWasActive = false;
-        FontRenderer::Shutdown();
-        VulkanRenderer::Shutdown();
-        ShutdownBackend();
+        Runtime::LifecycleHooks lifecycleHooks{};
+        lifecycleHooks.stopRenderWatchdog = [](void* /*userData*/) {
+            StopRenderWatchdog();
+        };
+        Runtime::ShutdownLifecycle(lifecycleState, lifecycleHooks);
+
         ShutdownCursors();
         g_panelDrag = {};
         g_panelStates.clear();
         g_uiBuildCallback = nullptr;  // Release lambda captures and prevent stale callbacks on re-init
         initialized = false;
+    }
+
+    void SetDockModelFunctionTable(const DockModelFunctionTable* table) {
+        DockModelBridge::SetFunctionTable(table);
+    }
+
+    DockModelFunctionTable GetDockModelFunctionTable() {
+        return DockModelBridge::GetFunctionTable();
+    }
+
+    bool ExportWorkspaceModel(const char* containerTitle, WorkspaceContainerModel& outModel) {
+        if (containerTitle == nullptr || containerTitle[0] == '\0') {
+            return false;
+        }
+
+        const auto it = g_workspaceContainerStates.find(containerTitle);
+        if (it == g_workspaceContainerStates.end() || !it->second.initialized) {
+            return false;
+        }
+
+        DockModelBridge::ExportWorkspaceContainerState(it->second, outModel);
+        const DockModelFunctionTable table = DockModelBridge::GetFunctionTable();
+        if (table.validate != nullptr && !table.validate(outModel, table.userData)) {
+            return false;
+        }
+        return true;
+    }
+
+    bool ImportWorkspaceModel(const char* containerTitle, const WorkspaceContainerModel& model) {
+        if (containerTitle == nullptr || containerTitle[0] == '\0') {
+            return false;
+        }
+
+        if (!DockModelBridge::ValidateWorkspaceContainerModel(model)) {
+            return false;
+        }
+
+        const DockModelFunctionTable table = DockModelBridge::GetFunctionTable();
+        if (table.validate != nullptr && !table.validate(model, table.userData)) {
+            return false;
+        }
+
+        WorkspaceContainerState& state = g_workspaceContainerStates[containerTitle];
+        DockModelBridge::ApplyWorkspaceContainerModel(model, state);
+
+        if (state.root != nullptr) {
+            CollapseDockGroups(state.root);
+            PruneWorkspaceSplitterLinks(state);
+            PruneWorkspaceSplitterIntersections(state);
+            if (state.root == nullptr) {
+                state.pendingSplitterReconcile = false;
+            }
+        } else {
+            state.pendingSplitterReconcile = false;
+        }
+
+        return true;
+    }
+
+    bool SaveWorkspaceModel(const char* containerTitle) {
+        WorkspaceContainerModel model;
+        if (!ExportWorkspaceModel(containerTitle, model)) {
+            return false;
+        }
+
+        return DockModelBridge::SaveWorkspaceModel(containerTitle, model);
+    }
+
+    bool LoadWorkspaceModel(const char* containerTitle) {
+        WorkspaceContainerModel loadedModel;
+        if (!DockModelBridge::LoadWorkspaceModel(containerTitle, loadedModel)) {
+            return false;
+        }
+
+        return ImportWorkspaceModel(containerTitle, loadedModel);
     }
 
     void RegisterUI(const UIBuildFn& callback) {

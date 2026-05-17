@@ -47,6 +47,15 @@ namespace Spherical {
         Flat,
         Embossed
     };
+
+    /**
+     * @enum DockLayout
+     * @brief Defines the split direction for panels docked in a workspace container.
+     */
+    enum class DockLayout {
+        SideBySide,  ///< Panels arranged horizontally (left-right)
+        TopBottom    ///< Panels arranged vertically (top-bottom)
+    };
     
     /**
      * @enum FontRenderMode
@@ -103,6 +112,34 @@ namespace Spherical {
          * @note Must always be called after begin_panel(), even if begin_panel() returned false.
          */
         virtual void end_panel() = 0;
+
+        /**
+         * @brief Begin a collapsible subsection inside the current panel
+         * @param title Subsection header text
+         * @return true if the subsection is expanded and content should be drawn
+         * @note end_panel_subsection() MUST always be called after begin_panel_subsection(),
+         *       regardless of return value. If false is returned (subsection is collapsed),
+         *       skip content but still call end_panel_subsection().
+         *
+         * Subsections default to expanded the first time they appear and remember their
+         * expansion state across frames. Nested subsections are supported and each nested
+         * subsection maintains its own state using its full parent/child path.
+         *
+         * Correct usage:
+         * @code
+         *   if (ui.begin_panel_subsection("Display")) {
+         *       ui.label("Visible only while expanded");
+         *   }
+         *   ui.end_panel_subsection();  // Always call this
+         * @endcode
+         */
+        virtual bool begin_panel_subsection(const char* title) = 0;
+
+        /**
+         * @brief End the current panel subsection
+         * @note Must always be called after begin_panel_subsection(), even if it returned false.
+         */
+        virtual void end_panel_subsection() = 0;
 
         /**
          * @brief Add a static label
@@ -435,6 +472,56 @@ namespace Spherical {
          * @note Valid between a successful begin_panel() and the matching end_panel().
          */
         virtual UIRect get_current_panel_content_bounds() const = 0;
+
+        /**
+         * @brief Begin a workspace container (hierarchical panel docking host)
+         * @param title Container title bar text
+         * @param x X position in pixels
+         * @param y Y position in pixels
+         * @param width Container width in pixels
+         * @param height Container height in pixels
+         * @return true if container is expanded and content should be rendered
+         * @note end_workspace_container() MUST always be called after begin_workspace_container(),
+         *       regardless of return value. If false is returned (container is collapsed),
+         *       skip content but still call end_workspace_container().
+         *
+         * Correct usage:
+         * @code
+         *   if (ui.begin_workspace_container("Workspace", 50, 50, 800, 600)) {
+         *       // Render panels that will be docked here
+         *   }
+         *   ui.end_workspace_container();  // Always call this
+         * @endcode
+         */
+        virtual bool begin_workspace_container(const char* title, int x, int y, int width, int height) = 0;
+
+        /**
+         * @brief End the current workspace container
+         * @note Must always be called after begin_workspace_container(), even if it returned false.
+         */
+        virtual void end_workspace_container() = 0;
+
+        /**
+         * @brief Get the number of panels docked in a workspace container
+         * @param containerTitle Title of the workspace container
+         * @return Number of docked panels (leaf nodes in the BSP tree), or 0 if container not found
+         */
+        virtual int get_workspace_panel_count(const char* containerTitle) const = 0;
+
+        /**
+         * @brief Get the top-level dock layout of a workspace container
+         * @param containerTitle Title of the workspace container
+         * @return DockLayout of the root split node if it exists, otherwise SideBySide by default
+         */
+        virtual DockLayout get_workspace_dock_layout(const char* containerTitle) const = 0;
+
+        /**
+         * @brief Undock a panel from its workspace container, restoring it to free-floating
+         * @param panelTitle Title of the panel to undock
+         * @note No-op if the panel is not currently docked. Internally collapses any resulting
+         *       single-child split nodes and reflows the BSP tree.
+         */
+        virtual void undock_panel_from_workspace(const char* panelTitle) = 0;
     };
 
     /**
