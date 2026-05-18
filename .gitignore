@@ -1,0 +1,38 @@
+# IDE
+.idea/
+.vs/
+.vscode/
+*.swp
+*.swo
+*~
+
+# CMake / build outputs
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+CMakeUserPresets.json
+CTestTestfile.cmake
+compile_commands.json
+cmake-build*/
+build/
+out/
+_deps/
+Testing/
+__cmake_systeminformation/
+
+# Generated project files
+*.sln
+*.slnx
+*.vcxproj
+*.vcxproj.filters
+
+# Binaries and intermediate artifacts
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+*.exp
+
