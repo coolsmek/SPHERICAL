@@ -74,6 +74,11 @@ add_library(Spherical ${SPHERICAL_LIBRARY_TYPE}
 
 add_library(SPHERICAL::SPHERICAL ALIAS Spherical)
 set_target_properties(Spherical PROPERTIES EXPORT_NAME SPHERICAL)
+set_target_properties(Spherical PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>/bin"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>/lib"
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>/lib"
+)
 
 if(SPHERICAL_COMPILE_SHADERS)
     add_dependencies(Spherical SphericalShaders)

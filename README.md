@@ -55,6 +55,21 @@ SPHERICAL-SDK/
 - `SPHERICAL_BUILD_SHARED` (default: `ON`): build shared library (`.dll`/`.so`)
 - `SPHERICAL_COMPILE_SHADERS` (default: `ON`): compile `.vert`/`.frag` to `.spv`
 
+## Default Build Configuration
+
+This repo now ships with `CMakePresets.json` for Visual Studio 2022 x64:
+
+- `vs2022-debug`
+- `vs2022-release`
+- `build-debug-sdk`
+- `build-release-sdk`
+- `build-debug-shaders`
+- `build-release-shaders`
+- `build-debug-install`
+- `build-release-install`
+
+Built artifacts are written under `out/build/<preset>/<config>/`.
+
 ## Quick Start (Subdirectory)
 
 Add this SDK repo under your project, then include it with CMake:
@@ -68,9 +83,7 @@ target_link_libraries(your_app PRIVATE SPHERICAL::SPHERICAL)
 Configure your app with vcpkg toolchain so dependencies resolve from manifests:
 
 ```powershell
-cmake -S . -B build `
-  -DCMAKE_TOOLCHAIN_FILE="<vcpkg-root>/scripts/buildsystems/vcpkg.cmake" `
-  -DCMAKE_BUILD_TYPE=Release
+cmake --preset vs2022-release
 ```
 
 ## Install + find_package
@@ -78,11 +91,9 @@ cmake -S . -B build `
 Build and install the SDK first:
 
 ```powershell
-cmake -S . -B build `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DCMAKE_TOOLCHAIN_FILE="<vcpkg-root>/scripts/buildsystems/vcpkg.cmake"
-cmake --build build --config Release
-cmake --install build --config Release --prefix "C:/sdk/spherical"
+cmake --preset vs2022-release
+cmake --build --preset build-release-sdk
+cmake --install .\out\build\vs2022-release --config Release --prefix "C:/sdk/spherical"
 ```
 
 Then consume from another project:
@@ -106,9 +117,8 @@ This SDK includes a local `vcpkg.json`. In manifest mode, vcpkg will install SDK
 Configure with the vcpkg toolchain:
 
 ```powershell
-cmake -S . -B build `
-  -DCMAKE_TOOLCHAIN_FILE="<vcpkg-root>/scripts/buildsystems/vcpkg.cmake" `
-  -DCMAKE_BUILD_TYPE=Release
+cmake --preset vs2022-debug
+cmake --build --preset build-debug-sdk
 ```
 
 Notes:

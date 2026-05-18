@@ -1,0 +1,101 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "vs2022-base",
+      "hidden": true,
+      "generator": "Visual Studio 17 2022",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/vcpkg-toolchain.cmake",
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
+        "SPHERICAL_BUILD_SHARED": "ON",
+        "SPHERICAL_COMPILE_SHADERS": "ON"
+      }
+    },
+    {
+      "name": "vs2022-debug",
+      "displayName": "Visual Studio 2022 Debug",
+      "description": "Configure the standalone SPHERICAL SDK for Debug builds.",
+      "inherits": "vs2022-base"
+    },
+    {
+      "name": "vs2022-release",
+      "displayName": "Visual Studio 2022 Release",
+      "description": "Configure the standalone SPHERICAL SDK for Release builds.",
+      "inherits": "vs2022-base"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "build-debug-sdk",
+      "displayName": "Build Debug (Spherical)",
+      "description": "Build the standalone SDK library target in Debug.",
+      "configurePreset": "vs2022-debug",
+      "configuration": "Debug",
+      "targets": [
+        "Spherical"
+      ]
+    },
+    {
+      "name": "build-release-sdk",
+      "displayName": "Build Release (Spherical)",
+      "description": "Build the standalone SDK library target in Release.",
+      "configurePreset": "vs2022-release",
+      "configuration": "Release",
+      "targets": [
+        "Spherical"
+      ]
+    },
+    {
+      "name": "build-debug-shaders",
+      "displayName": "Build Debug (SphericalShaders)",
+      "description": "Build only the shader compilation target in Debug.",
+      "configurePreset": "vs2022-debug",
+      "configuration": "Debug",
+      "targets": [
+        "SphericalShaders"
+      ]
+    },
+    {
+      "name": "build-release-shaders",
+      "displayName": "Build Release (SphericalShaders)",
+      "description": "Build only the shader compilation target in Release.",
+      "configurePreset": "vs2022-release",
+      "configuration": "Release",
+      "targets": [
+        "SphericalShaders"
+      ]
+    },
+    {
+      "name": "build-debug-install",
+      "displayName": "Build Debug (INSTALL)",
+      "description": "Build the standalone SDK install target in Debug.",
+      "configurePreset": "vs2022-debug",
+      "configuration": "Debug",
+      "targets": [
+        "INSTALL"
+      ]
+    },
+    {
+      "name": "build-release-install",
+      "displayName": "Build Release (INSTALL)",
+      "description": "Build the standalone SDK install target in Release.",
+      "configurePreset": "vs2022-release",
+      "configuration": "Release",
+      "targets": [
+        "INSTALL"
+      ]
+    }
+  ]
+}
+
