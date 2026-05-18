@@ -312,9 +312,11 @@ SPHERICAL/
 ├─ SPHERICAL-TEST/
 │  ├─ fonts/
 │  └─ main.cpp
+├─ buildScripts/
+│  └─ build_all.bat
 ├─ cmake/
 ├─ CMakeLists.txt
-└─ build_all.bat
+└─ CMakePresets.json
 ```
 
 ---
@@ -330,7 +332,31 @@ You will need:
 - `vcpkg` dependencies available for this project
 - CMake on `PATH`
 
-### Recommended build (default: build only)
+### Recommended script usage (default: build only)
+
+The repo build script now follows `CMakePresets.json` instead of taking a custom build directory.
+
+Usage:
+
+```bat
+buildScripts\build_all.bat [Debug|Release] [--run|run|--no-run|norun|build]
+```
+
+Examples:
+
+```bat
+buildScripts\build_all.bat Debug
+buildScripts\build_all.bat Debug --run
+buildScripts\build_all.bat Release --no-run
+buildScripts\build_all.bat Release norun
+```
+
+Notes:
+- The script configures with `vs2022-debug` or `vs2022-release`.
+- It builds `Spherical` and `SPHERICAL_Test` through the matching named build presets.
+- Legacy calls like `buildScripts\build_all.bat Release cmake-build-spherical-debug norun` still parse, but the old build-directory argument is ignored and only kept for backwards compatibility.
+
+### Equivalent manual CMake usage
 
 ```powershell
 cmake --preset vs2022-debug
@@ -341,11 +367,12 @@ cmake --build --preset build-debug-all
 
 ```powershell
 cmake --preset vs2022-debug
+cmake --build --preset build-debug-sdk
 cmake --build --preset build-debug-test
 .\out\build\vs2022-debug\SPHERICAL-TEST\Debug\SPHERICAL_Test.exe
 ```
 
-### Manual CMake build
+### Manual Release build
 
 ```powershell
 cmake --preset vs2022-release
