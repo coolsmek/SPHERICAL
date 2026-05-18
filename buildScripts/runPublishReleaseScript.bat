@@ -1,0 +1,1 @@
+-ExecutionPolicy Bypass -File .\publish-sdk-release.ps1
