@@ -1,0 +1,95 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "vs2022-base",
+      "hidden": true,
+      "generator": "Visual Studio 17 2022",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/vcpkg-toolchain.cmake",
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
+        "SPHERICAL_BUILD_SHARED": "ON",
+        "SPHERICAL_COMPILE_SHADERS": "ON"
+      }
+    },
+    {
+      "name": "vs2022-debug",
+      "displayName": "Visual Studio 2022 Debug",
+      "description": "Configure the full SPHERICAL workspace for Debug builds.",
+      "inherits": "vs2022-base"
+    },
+    {
+      "name": "vs2022-release",
+      "displayName": "Visual Studio 2022 Release",
+      "description": "Configure the full SPHERICAL workspace for Release builds.",
+      "inherits": "vs2022-base"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "build-debug-all",
+      "displayName": "Build Debug (all targets)",
+      "description": "Build the full SPHERICAL solution in Debug.",
+      "configurePreset": "vs2022-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "build-release-all",
+      "displayName": "Build Release (all targets)",
+      "description": "Build the full SPHERICAL solution in Release.",
+      "configurePreset": "vs2022-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "build-debug-sdk",
+      "displayName": "Build Debug (Spherical)",
+      "description": "Build only the SDK library target in Debug.",
+      "configurePreset": "vs2022-debug",
+      "configuration": "Debug",
+      "targets": [
+        "Spherical"
+      ]
+    },
+    {
+      "name": "build-release-sdk",
+      "displayName": "Build Release (Spherical)",
+      "description": "Build only the SDK library target in Release.",
+      "configurePreset": "vs2022-release",
+      "configuration": "Release",
+      "targets": [
+        "Spherical"
+      ]
+    },
+    {
+      "name": "build-debug-test",
+      "displayName": "Build Debug (SPHERICAL_Test)",
+      "description": "Build only the demo/test application in Debug.",
+      "configurePreset": "vs2022-debug",
+      "configuration": "Debug",
+      "targets": [
+        "SPHERICAL_Test"
+      ]
+    },
+    {
+      "name": "build-release-test",
+      "displayName": "Build Release (SPHERICAL_Test)",
+      "description": "Build only the demo/test application in Release.",
+      "configurePreset": "vs2022-release",
+      "configuration": "Release",
+      "targets": [
+        "SPHERICAL_Test"
+      ]
+    }
+  ]
+}
+

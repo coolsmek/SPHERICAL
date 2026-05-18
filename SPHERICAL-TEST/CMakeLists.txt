@@ -24,7 +24,7 @@ add_custom_command(TARGET SPHERICAL_Test POST_BUILD
 # Windows-specific: Use Windows subsystem for GUI app
 if (MSVC)
     set_target_properties(SPHERICAL_Test PROPERTIES
-        VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/SPHERICAL-TEST/Debug"
+        VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:SPHERICAL_Test>"
     )
 endif()
 

@@ -333,27 +333,38 @@ You will need:
 ### Recommended build (default: build only)
 
 ```powershell
-.\build_all.bat Debug cmake-build-spherical_debug
+cmake --preset vs2022-debug
+cmake --build --preset build-debug-all
 ```
 
 ### Build and run the demo explicitly
 
 ```powershell
-.\build_all.bat Debug cmake-build-spherical_debug --run
+cmake --preset vs2022-debug
+cmake --build --preset build-debug-test
+.\out\build\vs2022-debug\SPHERICAL-TEST\Debug\SPHERICAL_Test.exe
 ```
 
 ### Manual CMake build
 
 ```powershell
-cmake -S . -B .\cmake-build-spherical_debug
-cmake --build .\cmake-build-spherical_debug --config Debug --target SPHERICAL_Test
+cmake --preset vs2022-release
+cmake --build --preset build-release-sdk
+cmake --build --preset build-release-test
 ```
 
 ### Run the demo directly
 
 ```powershell
-.\cmake-build-spherical_debug\SPHERICAL-TEST\Debug\SPHERICAL_Test.exe
+.\out\build\vs2022-debug\SPHERICAL-TEST\Debug\SPHERICAL_Test.exe
 ```
+
+### Available presets
+
+- `vs2022-debug` / `vs2022-release`: configure the full workspace for Visual Studio 2022 x64.
+- `build-debug-all` / `build-release-all`: build the entire solution.
+- `build-debug-sdk` / `build-release-sdk`: build only the `Spherical` SDK target.
+- `build-debug-test` / `build-release-test`: build only the `SPHERICAL_Test` app.
 
 ---
 
