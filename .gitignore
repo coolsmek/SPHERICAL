@@ -36,8 +36,8 @@ _deps/
 Testing/
 __cmake_systeminformation/
 
-#releases archive
-github_releases/
+#release branch scripts
+pushReleaseScripts/
 
 # Generated Files
 install_manifest.txt
