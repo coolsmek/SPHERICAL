@@ -1,6 +1,6 @@
 {
   "name": "spherical",
-  "version-string": "0.1.14",
+  "version-string": "0.2.1",
   "dependencies": [
     {
       "name": "sdl3",
