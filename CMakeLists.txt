@@ -10,12 +10,31 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 	endif()
 endif()
 
-project(SPHERICAL VERSION 0.2.1 LANGUAGES CXX)
+# Load central version configuration
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/version.cmake)
+
+# Generate vcpkg.json from template to keep version in sync
+configure_file(
+		${CMAKE_CURRENT_SOURCE_DIR}/vcpkg.json.in
+		${CMAKE_CURRENT_SOURCE_DIR}/vcpkg.json
+		@ONLY
+)
+
+project(SPHERICAL VERSION ${SPHERICAL_VERSION} LANGUAGES CXX)
+
+# Auto-update version in documentation (after project setup)
+execute_process(
+		COMMAND ${CMAKE_COMMAND}
+		-DPROJECT_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+		-P ${CMAKE_SOURCE_DIR}/cmake/UpdateAllVersions.cmake
+		OUTPUT_QUIET
+		ERROR_QUIET
+)
+set(SPHERICAL_VERSION_SUFFIX "${SPHERICAL_VERSION_SUFFIX}")  # Re-export for subdirectories
 # Set the global C++ standard
 set(CMAKE_CXX_STANDARD 23)           # Or 26 if you want to go bleeding edge
 set(CMAKE_CXX_STANDARD_REQUIRED ON)  # Error out if the compiler is too old
 set(CMAKE_CXX_EXTENSIONS OFF)        # Use "Pure" C++ without compiler-specific junk
-set (SPHERICAL_VERSION_SUFFIX "alpha")
 
 # Force CMake to find the 1.4 components
 find_package(Vulkan 1.4 REQUIRED)

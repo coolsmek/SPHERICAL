@@ -3,15 +3,13 @@
 
 #include <array>
 #include <fstream>
+#include <iostream>
 #include <cstring>
 #include <string>
 #include <vector>
 #include <cstddef>
 #include <functional>
-
-#ifndef SPHERICAL_SHADER_DIR
-#define SPHERICAL_SHADER_DIR ""
-#endif
+#include <SDL3/SDL.h>
 
 namespace {
     std::vector<char> ReadBinaryFile(const std::string& path) {
@@ -32,6 +30,37 @@ namespace {
             return {};
         }
         return buffer;
+    }
+
+    bool FileExists(const std::string& path) {
+        std::ifstream file(path, std::ios::binary);
+        return file.good();
+    }
+
+    std::string ResolveShaderDirectory() {
+        // Try multiple candidate paths for shader directory
+        std::vector<std::string> candidates;
+        
+        // First, try relative to executable location (deployed layout)
+        const char* basePath = SDL_GetBasePath();
+        if (basePath != nullptr && basePath[0] != '\0') {
+            candidates.push_back(std::string(basePath) + "shaders");
+        }
+        
+        // Fallback: current working directory
+        candidates.push_back("./shaders");
+        candidates.push_back("shaders");
+        
+        // Test each candidate by checking for a known shader file
+        for (const std::string& candidate : candidates) {
+            const std::string testFile = candidate + "/ui_nuklear.vert.spv";
+            if (FileExists(testFile)) {
+                return candidate;
+            }
+        }
+        
+        // No valid directory found - return empty to signal error
+        return {};
     }
 
     VkShaderModule CreateShaderModule(VkDevice device, const std::vector<char>& code) {
@@ -458,12 +487,41 @@ namespace {
     }
 
     bool CreatePipelineObjects() {
-        const std::string shaderDir = SPHERICAL_SHADER_DIR;
+        // Resolve shader directory at runtime
+        const std::string shaderDir = ResolveShaderDirectory();
+        if (shaderDir.empty()) {
+            std::cerr << "[SPHERICAL][VulkanRenderer] FATAL: Failed to locate shaders directory." << std::endl;
+            std::cerr << "  Ensure compiled .spv shader files are in a 'shaders/' subdirectory relative to the executable." << std::endl;
+            
+            const char* basePath = SDL_GetBasePath();
+            if (basePath != nullptr) {
+                std::cerr << "  Executable location: " << basePath << std::endl;
+                std::cerr << "  Expected shader path: " << basePath << "shaders/" << std::endl;
+            }
+            return false;
+        }
+
+        // Load shader files
         const std::vector<char> vertShaderCode = ReadBinaryFile(shaderDir + "/ui_nuklear.vert.spv");
         const std::vector<char> uiFragShaderCode = ReadBinaryFile(shaderDir + "/ui_nuklear_ui.frag.spv");
         const std::vector<char> msdfFragShaderCode = ReadBinaryFile(shaderDir + "/ui_nuklear_msdf.frag.spv");
         const std::vector<char> grayscaleFragShaderCode = ReadBinaryFile(shaderDir + "/ui_nuklear_grayscale.frag.spv");
+        
         if (vertShaderCode.empty() || uiFragShaderCode.empty() || msdfFragShaderCode.empty() || grayscaleFragShaderCode.empty()) {
+            std::cerr << "[SPHERICAL][VulkanRenderer] FATAL: Failed to load one or more shader files from: " << shaderDir << std::endl;
+            if (vertShaderCode.empty()) {
+                std::cerr << "  Missing or invalid: " << shaderDir << "/ui_nuklear.vert.spv" << std::endl;
+            }
+            if (uiFragShaderCode.empty()) {
+                std::cerr << "  Missing or invalid: " << shaderDir << "/ui_nuklear_ui.frag.spv" << std::endl;
+            }
+            if (msdfFragShaderCode.empty()) {
+                std::cerr << "  Missing or invalid: " << shaderDir << "/ui_nuklear_msdf.frag.spv" << std::endl;
+            }
+            if (grayscaleFragShaderCode.empty()) {
+                std::cerr << "  Missing or invalid: " << shaderDir << "/ui_nuklear_grayscale.frag.spv" << std::endl;
+            }
+            std::cerr << "  Ensure SPHERICAL_COMPILE_SHADERS=ON during build and shaders are deployed with the executable." << std::endl;
             return false;
         }
 

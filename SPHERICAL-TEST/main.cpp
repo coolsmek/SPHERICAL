@@ -10,6 +10,7 @@
 #include <SDL3/SDL.h>
 
 #include "SPHERICAL.h"
+#include "SphericalVersion.h"
 #include "ui_style_scope.h"
 #include "ui_theme.h"
 
@@ -188,8 +189,12 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
     SDL_AddEventWatch(EventWatch, nullptr);
 
+    char windowTitle[128];
+    snprintf(windowTitle, sizeof(windowTitle), 
+        "SPHERICAL Control Panel v%s", Spherical::GetVersionString());
+
     SDL_Window* window = SDL_CreateWindow(
-        "SPHERICAL Control Panel",
+        windowTitle,
         1920,
         1080,
         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE

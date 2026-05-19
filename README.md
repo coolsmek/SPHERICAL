@@ -8,7 +8,7 @@
 </p>
 
 **SPHERICAL** is a C++ GUI SDK prototype focused on building fast, responsive, desktop-style tooling UIs on top of **Vulkan 1.4 dynamic rendering**.
-> **Current Release** (Test Control Panel APP Only, **No SDK Library release yet**): [SPHERICAL_Test_Release_v0.2.1-alpha.zip](https://github.com/coolsmek/SPHERICAL/releases/tag/v0.2.1-alpha)
+> **Current Release** (Test Control Panel APP Only, **No SDK Library release yet**): [SPHERICAL_Test_Release_v0.2.2-alpha.zip](https://github.com/coolsmek/SPHERICAL/releases/tag/v0.2.2-alpha)
 
 ---
 
@@ -339,22 +339,23 @@ The repo build script now follows `CMakePresets.json` instead of taking a custom
 Usage:
 
 ```bat
-buildScripts\build_all.bat [Debug|Release] [--run|run|--no-run|norun|build]
+build_all.bat [Debug|Release] [--run|run|--no-run|norun|build]
 ```
 
 Examples:
 
 ```bat
-buildScripts\build_all.bat Debug
-buildScripts\build_all.bat Debug --run
-buildScripts\build_all.bat Release --no-run
-buildScripts\build_all.bat Release norun
+build_all.bat Debug
+build_all.bat Debug --run
+build_all.bat Debug --no-run
+build_all.bat Release --no-run
+build_all.bat Release norun
 ```
 
 Notes:
 - The script configures with `vs2022-debug` or `vs2022-release`.
 - It builds `Spherical` and `SPHERICAL_Test` through the matching named build presets.
-- Legacy calls like `buildScripts\build_all.bat Release cmake-build-spherical-debug norun` still parse, but the old build-directory argument is ignored and only kept for backwards compatibility.
+- Legacy calls like `build_all.bat Release cmake-build-spherical-debug norun` still parse, but the old build-directory argument is ignored and only kept for backwards compatibility.
 
 ### Equivalent manual CMake usage
 

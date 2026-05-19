@@ -54,7 +54,7 @@ if /I "%RUN_MODE%"=="--no-run" set "SKIP_RUN=1"
 if /I "%RUN_MODE%"=="norun" set "SKIP_RUN=1"
 if /I "%RUN_MODE%"=="build" set "SKIP_RUN=1"
 
-for %%I in ("%~dp0..") do set "ROOT_DIR=%%~fI"
+for %%I in ("%~dp0.") do set "ROOT_DIR=%%~fI"
 set "BUILD_DIR=%ROOT_DIR%\out\build\%CONFIGURE_PRESET%"
 
 echo [INFO] Root: %ROOT_DIR%
@@ -81,6 +81,15 @@ if errorlevel 1 (
     echo [ERROR] CMake not found on PATH.
     exit /b 1
 )
+
+REM ADD THESE LINES HERE -- Testing Auto Update all version references during a build_all
+REM echo [STEP] Updating version files from cmake/version.cmake...
+REM cmake -DPROJECT_SOURCE_DIR="%ROOT_DIR%" -P "%ROOT_DIR%\cmake\UpdateAllVersions.cmake"
+REM if errorlevel 1 (
+REM     echo [ERROR] Version update failed.
+REM    exit /b 1
+REM)
+REM END NEW LINES
 
 echo [STEP] Configure CMake preset (%CONFIGURE_PRESET%)...
 cmake --preset %CONFIGURE_PRESET%

@@ -1,6 +1,6 @@
 ﻿{
-  "name": "spherical-sdk",
-  "version-string": "0.2.2",
+  "name": "spherical",
+  "version-string": "@SPHERICAL_VERSION@",
   "dependencies": [
     {
       "name": "sdl3",

@@ -1,0 +1,11 @@
+﻿# Central version configuration for SPHERICAL project
+# Update only this file to change all version numbers across the project
+
+set(SPHERICAL_VERSION_MAJOR 0)
+set(SPHERICAL_VERSION_MINOR 2)
+set(SPHERICAL_VERSION_PATCH 2)
+set(SPHERICAL_VERSION_SUFFIX "alpha")
+
+# Derived versions
+set(SPHERICAL_VERSION "${SPHERICAL_VERSION_MAJOR}.${SPHERICAL_VERSION_MINOR}.${SPHERICAL_VERSION_PATCH}")
+set(SPHERICAL_VERSION_FULL "${SPHERICAL_VERSION}-${SPHERICAL_VERSION_SUFFIX}")

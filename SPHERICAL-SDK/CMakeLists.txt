@@ -1,6 +1,33 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(SPHERICAL VERSION 0.2.1 LANGUAGES CXX)
+# Load central version configuration from parent
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/version.cmake)
+
+# Generate vcpkg.json from template to keep version in sync
+configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/vcpkg.json.in
+        ${CMAKE_CURRENT_SOURCE_DIR}/vcpkg.json
+        @ONLY
+)
+
+project(SPHERICAL VERSION ${SPHERICAL_VERSION} LANGUAGES CXX)
+
+# Generate version resource file for Windows DLL
+set(VER_FILEVERSION "${PROJECT_VERSION_MAJOR},${PROJECT_VERSION_MINOR},${PROJECT_VERSION_PATCH},0")
+set(VER_STRING "${PROJECT_VERSION}-${SPHERICAL_VERSION_SUFFIX}")
+
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/version.rc.in
+    ${CMAKE_CURRENT_BINARY_DIR}/version.rc
+    @ONLY
+)
+
+# Generate version header for C++ code
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/SphericalVersion.h.in
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/SphericalVersion.h
+    @ONLY
+)
 
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
@@ -48,6 +75,13 @@ if(SPHERICAL_COMPILE_SHADERS)
     add_custom_target(SphericalShaders DEPENDS ${SPHERICAL_SHADER_OUTPUTS})
 endif()
 
+# Make shader outputs available to consuming projects (parent scope)
+set(SPHERICAL_SHADER_OUTPUTS ${SPHERICAL_SHADER_OUTPUTS} PARENT_SCOPE)
+set(SPHERICAL_SHADER_OUTPUT_DIR ${SPHERICAL_SHADER_OUTPUT_DIR} PARENT_SCOPE)
+
+# Include helper functions for shader deployment
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/SphericalHelpers.cmake)
+
 set(SPHERICAL_LIBRARY_TYPE STATIC)
 if(SPHERICAL_BUILD_SHARED)
     set(SPHERICAL_LIBRARY_TYPE SHARED)
@@ -72,6 +106,11 @@ add_library(Spherical ${SPHERICAL_LIBRARY_TYPE}
         src/TaskRunner.cpp
 )
 
+# Add Windows version resource to DLL
+if(WIN32)
+    target_sources(Spherical PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/version.rc)
+endif()
+
 add_library(SPHERICAL::SPHERICAL ALIAS Spherical)
 set_target_properties(Spherical PROPERTIES EXPORT_NAME SPHERICAL)
 set_target_properties(Spherical PROPERTIES
@@ -93,7 +132,6 @@ target_include_directories(Spherical PRIVATE src)  # For nuklear_config.h
 
 target_compile_definitions(Spherical PRIVATE
         SPHERICAL_EXPORTS
-        SPHERICAL_SHADER_DIR="${SPHERICAL_SHADER_OUTPUT_DIR}"
 )
 
 target_compile_options(Spherical PRIVATE

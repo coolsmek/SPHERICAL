@@ -75,17 +75,37 @@ endif()
 ]=]
 )
 
+# Copy runtime assets to output directory
+# 1. Shaders (via helper function)
+spherical_copy_runtime_shaders(SPHERICAL_Test)
+
+# 2. Fonts
 add_custom_command(TARGET SPHERICAL_Test POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:SPHERICAL_Test>/fonts"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/fonts"
             "$<TARGET_FILE_DIR:SPHERICAL_Test>/fonts"
+    COMMENT "Copying fonts to runtime directory"
+)
+
+# 3. Config directory
+add_custom_command(TARGET SPHERICAL_Test POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:SPHERICAL_Test>/config"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/config"
+            "$<TARGET_FILE_DIR:SPHERICAL_Test>/config"
+    COMMENT "Copying config to runtime directory"
+)
+
+# 4. Runtime DLL dependencies (vcpkg libraries)
+add_custom_command(TARGET SPHERICAL_Test POST_BUILD
     COMMAND ${CMAKE_COMMAND}
             -DINPUT_EXECUTABLE="$<TARGET_FILE:SPHERICAL_Test>"
             -DINPUT_LIBRARY="$<TARGET_FILE:Spherical>"
             -DOUTPUT_DIR="$<TARGET_FILE_DIR:SPHERICAL_Test>"
             -DSEARCH_DIR_2="$<TARGET_FILE_DIR:Spherical>"
             -P "${SPHERICAL_TEST_RUNTIME_DEP_SCRIPT}"
+    COMMENT "Copying runtime dependencies (DLLs)"
 )
 
 install(TARGETS SPHERICAL_Test
@@ -94,6 +114,18 @@ install(TARGETS SPHERICAL_Test
 
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/fonts/"
     DESTINATION "${CMAKE_INSTALL_BINDIR}/fonts"
+)
+
+# Install shaders to deployment directory
+if(DEFINED SPHERICAL_SHADER_OUTPUTS)
+    install(FILES ${SPHERICAL_SHADER_OUTPUTS}
+        DESTINATION "${CMAKE_INSTALL_BINDIR}/shaders"
+    )
+endif()
+
+# Install config directory
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/config/"
+    DESTINATION "${CMAKE_INSTALL_BINDIR}/config"
 )
 
 set(_spherical_test_install_code [=[
