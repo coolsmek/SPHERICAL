@@ -179,7 +179,7 @@ git submodule update --init --recursive
 
 ## Versioning and Releases
 
-- Use semantic pre-release tags while API is evolving (for example, `v0.1.14-alpha`).
+- Use semantic pre-release tags while API is evolving (for example, `v0.2.2-alpha`).
 - Publish release notes with API changes, shader changes, and breaking build changes.
 - Keep this README focused on consumer-facing setup only.
 
