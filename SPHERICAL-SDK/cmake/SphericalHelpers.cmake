@@ -39,7 +39,7 @@ function(spherical_copy_runtime_shaders target_name)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${shader_file}"
                     "$<TARGET_FILE_DIR:${target_name}>/shaders/${shader_name}"
-            DEPENDS "${shader_file}"
+            
             COMMENT "Copying shader: ${shader_name}"
         )
     endforeach()
