@@ -89,13 +89,15 @@ add_custom_command(TARGET SPHERICAL_Test POST_BUILD
 )
 
 # 3. Config directory
-add_custom_command(TARGET SPHERICAL_Test POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:SPHERICAL_Test>/config"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/config"
-            "$<TARGET_FILE_DIR:SPHERICAL_Test>/config"
-    COMMENT "Copying config to runtime directory"
-)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/config")
+    add_custom_command(TARGET SPHERICAL_Test POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:SPHERICAL_Test>/config"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/config"
+                "$<TARGET_FILE_DIR:SPHERICAL_Test>/config"
+        COMMENT "Copying config to runtime directory"
+    )
+endif ()
 
 # 4. Runtime DLL dependencies (vcpkg libraries)
 add_custom_command(TARGET SPHERICAL_Test POST_BUILD
