@@ -597,6 +597,9 @@ namespace {
         g_cursorState.applied = CursorRequest::Default;
     }
 
+    static Spherical::UIVec2 g_workspaceBoundarySize = {0.0f, 0.0f};
+    static Spherical::UIVec2 g_workspaceBoundaryOffset = {0.0f, 0.0f};
+
     static void DrawCenterMarkerOverlay(nk_context* context, const VkExtent2D& framebufferExtent) {
         if (context == nullptr) {
             return;
@@ -618,6 +621,15 @@ namespace {
                 const float arm = 6.0f;
 
                 nk_stroke_line(buffer, cx - arm, cy, cx + arm, cy, 1.5f, red);
+                nk_stroke_line(buffer, cx, cy - arm, cx, cy + arm, 1.5f, red);
+                
+                // Draw workspace boundary if specified
+                if (g_workspaceBoundarySize.x > 0.0f && g_workspaceBoundarySize.y > 0.0f) {
+                    const nk_color black = nk_rgb(0, 0, 0);
+                    const float bx = cx - (g_workspaceBoundarySize.x * 0.5f) + g_workspaceBoundaryOffset.x;
+                    const float by = cy - (g_workspaceBoundarySize.y * 0.5f) - g_workspaceBoundaryOffset.y;
+                    nk_stroke_rect(buffer, nk_rect(bx, by, g_workspaceBoundarySize.x, g_workspaceBoundarySize.y), 0.0f, 1.0f, black);
+                }
                 nk_stroke_line(buffer, cx, cy - arm, cx, cy + arm, 1.5f, red);
                 nk_fill_circle(buffer, nk_rect(cx - 1.5f, cy - 1.5f, 3.0f, 3.0f), red);
             }
@@ -1088,6 +1100,8 @@ namespace {
         std::vector<StyleItemStateSnapshot> m_panelTitleBarColorStack;
         std::vector<nk_color> m_panelBorderColorStack;
         std::vector<ColorStateSnapshot> m_panelTitleTextColorStack;
+        std::vector<Spherical::FontStyle> m_panelTitleFontStack;
+        std::vector<struct nk_vec2> m_panelTitlePaddingStack;
         std::vector<ColorStateSnapshot> m_radioButtonTextColorStack;
         std::vector<StyleItemStateSnapshot> m_buttonBackgroundColorStack;
         std::vector<nk_style_item> m_buttonHoverBackgroundColorStack;
@@ -1699,6 +1713,7 @@ namespace {
             m_ctx->style.edit.cursor_normal = snapshot.cursorNormal;
             m_ctx->style.edit.cursor_hover = snapshot.cursorHover;
         }
+                bool m_activePanelNoPadding = false;
         
 
     public:
@@ -1770,9 +1785,16 @@ namespace {
             }
         }
 
-        bool begin_panel(const char* title, int x, int y, int width, int height) override;
+        bool begin_panel(const char* title, int x, int y, int width, int height, Spherical::PanelFlags flags = Spherical::PanelFlags::None) override;
 
         void end_panel() override;
+        
+        bool begin_menu_bar() override;
+        void end_menu_bar() override;
+        
+        bool begin_dropdown_menu(const char* label) override;
+        void end_dropdown_menu() override;
+        bool menu_item(const char* label) override;
 
         bool begin_panel_subsection(const char* title) override;
 
@@ -1781,8 +1803,23 @@ namespace {
         Spherical::UIRect get_current_panel_bounds() const override;
 
         Spherical::UIRect get_current_panel_content_bounds() const override;
+        
+        bool is_current_panel_resizing() const override {
+            if (g_panelDrag.active && m_activePanelTitle != nullptr && g_panelDrag.windowTitle == m_activePanelTitle) {
+                return true;
+            }
+            if (g_splitterDrag.active && m_activePanelTitle != nullptr) {
+                auto it = g_workspaceContainerStates.find(g_splitterDrag.containerTitle);
+                if (it != g_workspaceContainerStates.end() && it->second.root != nullptr) {
+                    if (FindDockNodeByPanelTitle(it->second.root.get(), m_activePanelTitle) != nullptr) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
 
-        bool begin_workspace_container(const char* title, int x, int y, int width, int height) override;
+        bool begin_workspace_container(const char* title, int x, int y, int width, int height, Spherical::PanelFlags flags, const Spherical::WorkspaceContainerStyle* style) override;
 
         void end_workspace_container() override;
 
@@ -1817,6 +1854,28 @@ namespace {
         void text_input(const char* label, char* buffer, size_t bufferSize) override;
 
         bool radio_button(const char* label, int* activeIndex, int value) override;
+        
+        void image(void* texture_handle_ptr, float width, float height) override {
+            if (m_ctx == nullptr) {
+                return;
+            }
+            nk_layout_row_dynamic(m_ctx, height, 1);
+            struct nk_image img = nk_image_ptr(texture_handle_ptr);
+            nk_image(m_ctx, img);
+        }
+
+        void image_centered(void* texture_handle_ptr, float width, float height, float available_width, float available_height) override {
+            if (m_ctx == nullptr) {
+                return;
+            }
+            nk_layout_space_begin(m_ctx, NK_STATIC, available_height, 1);
+            float x = (available_width - width) * 0.5f;
+            float y = (available_height - height) * 0.5f;
+            nk_layout_space_push(m_ctx, nk_rect(x, y, width, height));
+            struct nk_image img = nk_image_ptr(texture_handle_ptr);
+            nk_image(m_ctx, img);
+            nk_layout_space_end(m_ctx);
+        }
         
         uint32_t get_framebuffer_width() const override {
             return m_framebufferExtent.width;
@@ -1905,7 +1964,26 @@ namespace {
 
         void pop_panel_title_text_color() override {
             restore_last_panel_title_text_color();
-        };
+        }
+        void push_panel_title_font(Spherical::FontStyle style) override {
+            m_panelTitleFontStack.push_back(style);
+        }
+
+        void pop_panel_title_font() override {
+            if (!m_panelTitleFontStack.empty()) {
+                m_panelTitleFontStack.pop_back();
+            }
+        }
+        
+        void push_panel_title_padding(const Spherical::UIVec2& padding) override {
+            m_panelTitlePaddingStack.push_back(nk_vec2(padding.x, padding.y));
+        }
+
+        void pop_panel_title_padding() override {
+            if (!m_panelTitlePaddingStack.empty()) {
+                m_panelTitlePaddingStack.pop_back();
+            }
+        }
 
         void push_radio_button_text_color(const Spherical::UIColor& color) override {
             if (m_ctx == nullptr) {
@@ -2120,6 +2198,8 @@ namespace {
     };
 
     #include "ui/UIPainterPanel.inl"
+    #include "ui/UIPainterMenuBar.inl"
+    #include "ui/UIPainterMenu.inl"
     #include "ui/UIPainterWorkspaceContainer.inl"
     #include "ui/UIPainterLayout.inl"
     #include "ui/UIPainterSlider.inl"
@@ -2199,6 +2279,8 @@ namespace Spherical {
     }
 
     bool Init(const SphericalInitInfo& info) {
+        g_workspaceBoundarySize = info.workspaceBoundarySize;
+        g_workspaceBoundaryOffset = info.workspaceBoundaryOffset;
         s_fallbackFont.width = FallbackFontWidth;
         s_fallbackFont.userdata = nk_handle_ptr(nullptr);
 
@@ -2371,5 +2453,26 @@ namespace Spherical {
 
     void RegisterUI(const UIBuildFn& callback) {
         g_uiBuildCallback = callback;
+    }
+
+    void* RegisterTexture(VkImageView imageView, VkSampler sampler) {
+        nk_handle handle = VulkanRenderer::RegisterTexture(imageView, sampler);
+        return handle.ptr;
+    }
+
+    void FreeTexture(void* texture_handle_ptr) {
+        if (texture_handle_ptr == nullptr) return;
+        nk_handle handle = nk_handle_ptr(texture_handle_ptr);
+        VulkanRenderer::FreeTexture(handle);
+    }
+
+    SphericalVulkanContext GetVulkanContext() {
+        SphericalVulkanContext ctx{};
+        ctx.instance = g_backend.instance;
+        ctx.physicalDevice = g_backend.physicalDevice;
+        ctx.device = g_backend.device;
+        ctx.graphicsQueue = g_backend.graphicsQueue;
+        ctx.graphicsQueueIndex = g_backend.graphicsQueueIndex;
+        return ctx;
     }
 }

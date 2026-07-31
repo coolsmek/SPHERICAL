@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vulkan/vulkan.h>
+
 /**
  * @file SPHERICAL.h
  * @brief Spherical UI Rendering Library
@@ -27,6 +29,8 @@ namespace Spherical {
         bool preferImmediatePresent = true;      ///< Try VK_PRESENT_MODE_IMMEDIATE_KHR first, fallback to FIFO
         uint32_t framesInFlight = 1;             ///< Reserved for future multi-frame sync (currently clamped to 1)
         bool enableValidation = false;           ///< Reserved for future validation-layers toggle
+        UIVec2 workspaceBoundarySize = {0.0f, 0.0f}; ///< Optional absolute workspace bounds. (0,0) means unbounded.
+        UIVec2 workspaceBoundaryOffset = {0.0f, 0.0f}; ///< Offset for the workspace boundary.
     };
 
     /**
@@ -43,10 +47,42 @@ namespace Spherical {
     SPHERICAL_API void NewFrame();
     
     /**
+     * @brief Register a custom Vulkan texture for use in UI images
+     * @param imageView The Vulkan image view to render
+     * @param sampler The Vulkan sampler to use (or VK_NULL_HANDLE for default UI sampler)
+     * @return An opaque pointer that can be passed to UIPainter::image()
+     */
+    SPHERICAL_API void* RegisterTexture(VkImageView imageView, VkSampler sampler = VK_NULL_HANDLE);
+
+    /**
+     * @brief Free a custom Vulkan texture descriptor set that was registered via RegisterTexture
+     * @param texture_handle_ptr The opaque pointer returned by RegisterTexture
+     */
+    SPHERICAL_API void FreeTexture(void* texture_handle_ptr);
+    
+    /**
      * @brief Render the UI (SDK owns acquire/submit/present internally)
      * @note Safe to call even if Init() has not been called
      */
     SPHERICAL_API void Render();
+
+    /**
+     * @struct SphericalVulkanContext
+     * @brief Exposes the internal Vulkan state for application-side rendering
+     */
+    struct SphericalVulkanContext {
+        VkInstance instance = VK_NULL_HANDLE;
+        VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+        VkDevice device = VK_NULL_HANDLE;
+        VkQueue graphicsQueue = VK_NULL_HANDLE;
+        uint32_t graphicsQueueIndex = 0;
+    };
+
+    /**
+     * @brief Get the internal Vulkan context
+     * @return The Vulkan context used by the library
+     */
+    SPHERICAL_API SphericalVulkanContext GetVulkanContext();
     
     /**
      * @brief Shutdown and cleanup resources

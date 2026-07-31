@@ -70,6 +70,7 @@ namespace Spherical::Internal {
         bool needsRebalance = false;
         bool pendingUndockAll = false;
         bool pendingSplitterReconcile = false;
+        bool disallowUndock = false;
         float offsetFromCenterX = 0.0f;
         float offsetFromCenterY = 0.0f;
         float width = 0.0f;

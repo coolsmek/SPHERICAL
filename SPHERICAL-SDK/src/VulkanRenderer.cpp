@@ -1,4 +1,4 @@
-﻿#include "VulkanRenderer.h"
+#include "VulkanRenderer.h"
 #include "FontRenderer.h"
 
 #include <array>
@@ -720,12 +720,50 @@ namespace {
     }
 
     VkDescriptorSet GetDescriptorSetForTexture(nk_handle texture) {
-        return IsFontTexture(texture) ? g_rendererState.fontDescriptorSet : g_rendererState.nullDescriptorSet;
+        if (IsFontTexture(texture)) {
+            return g_rendererState.fontDescriptorSet;
+        }
+        if (texture.ptr == nullptr || texture.ptr == g_rendererState.nullTextureView) {
+            return g_rendererState.nullDescriptorSet;
+        }
+        // If it's not the font or null texture, we assume it's a descriptor set allocated via RegisterTexture
+        return static_cast<VkDescriptorSet>(texture.ptr);
     }
 }
 
 namespace Spherical {
 namespace VulkanRenderer {
+
+    nk_handle RegisterTexture(VkImageView imageView, VkSampler sampler) {
+        if (!g_rendererState.initialized || imageView == VK_NULL_HANDLE) {
+            return nk_handle_ptr(nullptr);
+        }
+
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = g_rendererState.descriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &g_rendererState.descriptorSetLayout;
+
+        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+        if (vkAllocateDescriptorSets(g_rendererState.device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
+            return nk_handle_ptr(nullptr);
+        }
+
+        VkSampler usedSampler = sampler != VK_NULL_HANDLE ? sampler : g_rendererState.uiSampler;
+        UpdateDescriptorSet(descriptorSet, usedSampler, imageView);
+
+        return nk_handle_ptr(descriptorSet);
+    }
+
+    void FreeTexture(nk_handle texture) {
+        if (!g_rendererState.initialized || texture.ptr == nullptr || IsFontTexture(texture) || texture.ptr == g_rendererState.nullTextureView) {
+            return;
+        }
+        VkDescriptorSet descriptorSet = static_cast<VkDescriptorSet>(texture.ptr);
+        vkFreeDescriptorSets(g_rendererState.device, g_rendererState.descriptorPool, 1, &descriptorSet);
+    }
+
     bool Init(const RendererInitInfo& info) {
         if (g_rendererState.initialized) {
             Shutdown();
@@ -789,16 +827,17 @@ namespace VulkanRenderer {
             return false;
         }
 
-        // Create descriptor pool
+        // Create descriptor pool (increased maxSets for custom textures)
         VkDescriptorPoolSize poolSize{};
         poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSize.descriptorCount = 2;
+        poolSize.descriptorCount = 1024;
 
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
         poolInfo.poolSizeCount = 1;
         poolInfo.pPoolSizes = &poolSize;
-        poolInfo.maxSets = 2;
+        poolInfo.maxSets = 1024;
 
         if (vkCreateDescriptorPool(g_rendererState.device, &poolInfo, nullptr, 
                                    &g_rendererState.descriptorPool) != VK_SUCCESS) {

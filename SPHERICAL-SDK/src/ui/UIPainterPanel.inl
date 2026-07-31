@@ -1,4 +1,4 @@
-bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int height) {
+bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int height, Spherical::PanelFlags flags) {
     m_panelSubsectionStack.clear();
 
     if (m_ctx == nullptr || title == nullptr) {
@@ -16,9 +16,49 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
     const float centerX = static_cast<float>(m_framebufferExtent.width) * 0.5f;
     const float centerY = static_cast<float>(m_framebufferExtent.height) * 0.5f;
 
-    auto clamp_bounds = [&](struct nk_rect& bounds) {
+    auto clamp_bounds = [&](struct nk_rect& bounds, bool is_resizing = false) {
         bounds.w = std::max(bounds.w, kMinWidth);
         bounds.h = std::max(bounds.h, kMinHeight);
+
+        if (g_workspaceBoundarySize.x > 0.0f && g_workspaceBoundarySize.y > 0.0f) {
+            const float bx = centerX - (g_workspaceBoundarySize.x * 0.5f) + g_workspaceBoundaryOffset.x;
+            const float by = centerY - (g_workspaceBoundarySize.y * 0.5f) - g_workspaceBoundaryOffset.y;
+            const float bw = g_workspaceBoundarySize.x;
+            const float bh = g_workspaceBoundarySize.y;
+
+            if (bounds.w > bw) bounds.w = bw;
+            if (bounds.h > bh) bounds.h = bh;
+
+            if (is_resizing) {
+                if (bounds.x < bx) {
+                    bounds.w -= (bx - bounds.x);
+                    bounds.x = bx;
+                }
+                if (bounds.y < by) {
+                    bounds.h -= (by - bounds.y);
+                    bounds.y = by;
+                }
+                if (bounds.x + bounds.w > bx + bw) {
+                    bounds.w = (bx + bw) - bounds.x;
+                }
+                if (bounds.y + bounds.h > by + bh) {
+                    bounds.h = (by + bh) - bounds.y;
+                }
+                // Enforce min size again after possible shrinkage
+                bounds.w = std::max(bounds.w, kMinWidth);
+                bounds.h = std::max(bounds.h, kMinHeight);
+            } else {
+                if (bounds.x < bx) bounds.x = bx;
+                if (bounds.y < by) bounds.y = by;
+
+                if (bounds.x + bounds.w > bx + bw) {
+                    bounds.x = (bx + bw) - bounds.w;
+                }
+                if (bounds.y + bounds.h > by + bh) {
+                    bounds.y = (by + bh) - bounds.h;
+                }
+            }
+        }
     };
 
     auto bounds_from_state = [&](const PanelPersistentState& state) {
@@ -43,8 +83,8 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
     if (!panelState.initialized) {
         panelState.width = std::max(kMinWidth, static_cast<float>(width));
         panelState.height = std::max(kMinHeight, static_cast<float>(height));
-        panelState.offsetFromCenterX = static_cast<float>(x) - centerX;
-        panelState.offsetFromCenterY = static_cast<float>(y) - centerY;
+        panelState.offsetFromCenterX = static_cast<float>(x) - (panelState.width * 0.5f);
+        panelState.offsetFromCenterY = -static_cast<float>(y) - (panelState.height * 0.5f);
         panelState.initialWidth = panelState.width;
         panelState.initialHeight = panelState.height;
         panelState.initialOffsetFromCenterX = panelState.offsetFromCenterX;
@@ -56,6 +96,7 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
 
     // Check if this panel is docked in a workspace container
     bool isPanelDocked = false;
+    bool disallowUndock = false;
     for (auto& [containerTitle, containerState] : g_workspaceContainerStates) {
         if (containerState.root == nullptr) {
             continue;
@@ -65,12 +106,15 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
             // Panel is docked - inset its rect so splitter lines remain visible between docked panels.
             panelBounds = InsetDockedPanelRect(leafNode->computedRect);
             isPanelDocked = true;
+            disallowUndock = containerState.disallowUndock;
             break;
         }
     }
 
+    const bool isLocked = (static_cast<uint32_t>(flags) & static_cast<uint32_t>(Spherical::PanelFlags::Locked)) != 0;
+
     if (g_panelDrag.active && g_panelDrag.windowTitle == title) {
-        if (isPanelDocked && g_panelDrag.mode != PanelDragMode::Move) {
+        if (isLocked || (isPanelDocked && g_panelDrag.mode != PanelDragMode::Move)) {
             g_panelDrag = {};
             SDL_CaptureMouse(false);
         }
@@ -215,7 +259,7 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
                 nextBounds.h = kMinHeight;
             }
 
-            clamp_bounds(nextBounds);
+            clamp_bounds(nextBounds, g_panelDrag.mode != PanelDragMode::Move);
             panelBounds = nextBounds;
             write_state_from_bounds(panelState, panelBounds);
         }
@@ -226,7 +270,11 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
         write_state_from_bounds(panelState, panelBounds);
     }
 
-    const nk_user_font* titleFont = Spherical::FontRenderer::GetFontHandle(Spherical::FontStyle::Title);
+    Spherical::FontStyle targetFontStyle = Spherical::FontStyle::Title;
+    if (!m_panelTitleFontStack.empty()) {
+        targetFontStyle = m_panelTitleFontStack.back();
+    }
+    const nk_user_font* titleFont = Spherical::FontRenderer::GetFontHandle(targetFontStyle);
     if (titleFont == nullptr) {
         titleFont = (m_ctx != nullptr) ? m_ctx->style.font : nullptr;
     }
@@ -235,7 +283,29 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
         nk_style_push_font(m_ctx, titleFont);
     }
 
-    const nk_flags panelFlags = (isPanelDocked ? 0 : NK_WINDOW_BORDER) | NK_WINDOW_TITLE;
+    bool pushedTitlePadding = false;
+    if (!m_panelTitlePaddingStack.empty()) {
+        nk_style_push_vec2(m_ctx, &m_ctx->style.window.header.padding, m_panelTitlePaddingStack.back());
+        pushedTitlePadding = true;
+    }
+
+    nk_flags panelFlags = (isPanelDocked ? 0 : NK_WINDOW_BORDER);
+    if (!(flags & Spherical::PanelFlags::NoTitle)) {
+        panelFlags |= NK_WINDOW_TITLE;
+    }
+    if (flags & Spherical::PanelFlags::NoScrollbar) {
+        panelFlags |= NK_WINDOW_NO_SCROLLBAR;
+    }
+
+    if (flags & Spherical::PanelFlags::NoPadding) {
+        nk_style_push_vec2(m_ctx, &m_ctx->style.window.padding, nk_vec2(0.0f, 0.0f));
+        m_activePanelNoPadding = true;
+    } else {
+        m_activePanelNoPadding = false;
+    }
+
+
+
     const bool result = nk_begin(
         m_ctx,
         title,
@@ -243,6 +313,9 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
         panelFlags) != 0;
     if (pushedTitleFont) {
         nk_style_pop_font(m_ctx);
+    }
+    if (pushedTitlePadding) {
+        nk_style_pop_vec2(m_ctx);
     }
 
     if (result) {
@@ -273,7 +346,7 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
             undockButtonDiameter
         );
 
-        if (isPanelDocked && m_ctx->current != nullptr) {
+        if (isPanelDocked && !disallowUndock && m_ctx->current != nullptr) {
             nk_command_buffer* buffer = &m_ctx->current->buffer;
             const bool undockButtonHovered = IsMouseInsideRect(m_ctx, undockButtonRect);
             const nk_color undockButtonColor = undockButtonHovered ? nk_rgb(245, 88, 88) : nk_rgb(230, 60, 60);
@@ -317,7 +390,7 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
         const struct nk_rect edgeBottom = nk_rect(windowBounds.x + kCornerHandleSize, windowBounds.y + windowBounds.h - kEdgeHandleThickness, std::max(0.0f, windowBounds.w - 2.0f * kCornerHandleSize), kEdgeHandleThickness);
         const struct nk_rect edgeLeft = nk_rect(windowBounds.x, windowBounds.y + kCornerHandleSize, kEdgeHandleThickness, std::max(0.0f, windowBounds.h - 2.0f * kCornerHandleSize));
 
-        if (!isPanelDocked && g_panelDrag.active && g_panelDrag.windowTitle == title) {
+        if ((!isPanelDocked && !isLocked) && g_panelDrag.active && g_panelDrag.windowTitle == title) {
             switch (g_panelDrag.mode) {
                 case PanelDragMode::ResizeTopLeft:
                 case PanelDragMode::ResizeBottomRight:
@@ -340,7 +413,7 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
                 default:
                     break;
             }
-        } else if (!isPanelDocked) {
+        } else if (!isPanelDocked && !isLocked) {
             if (IsMouseInsideRect(m_ctx, topLeft) || IsMouseInsideRect(m_ctx, bottomRight)) {
                 RequestCursor(CursorRequest::ResizeNwse);
             } else if (IsMouseInsideRect(m_ctx, topRight) || IsMouseInsideRect(m_ctx, bottomLeft)) {
@@ -353,7 +426,7 @@ bool UIPainterImpl::begin_panel(const char* title, int x, int y, int width, int 
         }
 
         // Don't allow independent move/resize drags for docked panels
-        if (!g_panelDrag.active && !isPanelDocked && WasLeftMousePressed(m_ctx)) {
+        if (!g_panelDrag.active && (!isPanelDocked && !isLocked) && WasLeftMousePressed(m_ctx)) {
             PanelDragMode startMode = PanelDragMode::None;
             if (IsMouseInsideRect(m_ctx, topLeft)) {
                 startMode = PanelDragMode::ResizeTopLeft;
@@ -464,11 +537,31 @@ void UIPainterImpl::end_panel() {
                         ? hoveredHit
                         : DockSplitterHit{}
                 );
+
+                // Draw manual razor-sharp 1px inner border
+                const struct nk_rect oldClip = m_ctx->current->buffer.clip;
+                nk_push_scissor(&m_ctx->current->buffer, nk_rect(0, 0, 9999, 9999));
+
+                struct nk_rect borderRect;
+                borderRect.x = m_currentPanelBounds.x + 0.5f;
+                borderRect.y = m_currentPanelBounds.y + 0.5f;
+                borderRect.w = m_currentPanelBounds.w - 1.0f;
+                borderRect.h = m_currentPanelBounds.h - 1.0f;
+                nk_stroke_rect(&m_ctx->current->buffer, borderRect, 0.0f, 1.0f, nk_rgb(144, 159, 174)); // docked panel 1 pixel border color (out of 255 rgb)
+
+                nk_push_scissor(&m_ctx->current->buffer, oldClip);
             }
         }
     }
     nk_end(m_ctx);
+
+
+
+    if (m_activePanelNoPadding) {
+        nk_style_pop_vec2(m_ctx);
+        m_activePanelNoPadding = false;
+    }
+
     m_panelSubsectionStack.clear();
     m_activePanelTitle = nullptr;
 }
-

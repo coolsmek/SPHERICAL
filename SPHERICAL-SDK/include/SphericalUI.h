@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 /**
  * @file SphericalUI.h
@@ -71,8 +71,36 @@ namespace Spherical {
      * @brief Defines standard UI font styles for text rendering.
      */
     enum class FontStyle {
+        Small,   ///< Smaller text for dense UI elements (Grayscale: FT_LOAD_TARGET_NORMAL, MSDF: no hinting)
         Regular, ///< Default body text (Grayscale: FT_LOAD_TARGET_NORMAL, MSDF: no hinting)
         Title    ///< Larger text for titles and headers (Grayscale: FT_LOAD_TARGET_LIGHT, MSDF: no hinting)
+    };
+
+    /**
+     * @enum PanelFlags
+     * @brief Additional window behaviors for standard panels.
+     */
+    enum class PanelFlags : uint32_t {
+        None = 0,
+        NoScrollbar = 1 << 0,
+        NoTitle = 1 << 1,
+        NoPadding = 1 << 2,
+        Locked = 1 << 3,
+        NoUndock = 1 << 4,
+        AutoMaximize = 1 << 5
+    };
+    
+    inline PanelFlags operator|(PanelFlags a, PanelFlags b) {
+        return static_cast<PanelFlags>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
+    }
+    inline bool operator&(PanelFlags a, PanelFlags b) {
+        return (static_cast<uint32_t>(a) & static_cast<uint32_t>(b)) != 0;
+    }
+
+    struct WorkspaceContainerStyle {
+        bool solidBorder = false;
+        float borderThickness = 1.0f;
+        UIColor borderColor = {145.0f/255.0f, 170.0f/255.0f, 205.0f/255.0f, 1.0f};
     };
 
     /**
@@ -105,13 +133,47 @@ namespace Spherical {
          *   ui.end_panel();  // Always call this
          * @endcode
          */
-        virtual bool begin_panel(const char* title, int x, int y, int width, int height) = 0;
+        virtual bool begin_panel(const char* title, int x, int y, int width, int height, PanelFlags flags = PanelFlags::None) = 0;
 
         /**
          * @brief End the current panel
          * @note Must always be called after begin_panel(), even if begin_panel() returned false.
          */
         virtual void end_panel() = 0;
+
+        /**
+         * @brief Begin a menu bar fixed to the top of the main window.
+         * @return true if the menu bar is expanded and content should be drawn.
+         * @note end_menu_bar() MUST always be called after begin_menu_bar().
+         */
+        virtual bool begin_menu_bar() = 0;
+
+        /**
+         * @brief End the current menu bar.
+         * @note Must always be called after begin_menu_bar().
+         */
+        virtual void end_menu_bar() = 0;
+
+        /**
+         * @brief Begin a dropdown menu from the menu bar.
+         * @param label The text shown on the menu bar button.
+         * @return true if the dropdown is currently open and items should be drawn.
+         */
+        virtual bool begin_dropdown_menu(const char* label) = 0;
+
+        /**
+         * @brief End the current dropdown menu.
+         * @note Must always be called after begin_dropdown_menu(), even if it returned false.
+         */
+        virtual void end_dropdown_menu() = 0;
+
+        /**
+         * @brief Add a selectable item to a dropdown menu.
+         * @param label The text for the menu item.
+         * @return true if the item was clicked this frame.
+         */
+        virtual bool menu_item(const char* label) = 0;
+
 
         /**
          * @brief Begin a collapsible subsection inside the current panel
@@ -205,14 +267,26 @@ namespace Spherical {
          * @param activeIndex Pointer to the integer that holds the currently selected value for the group
          * @param value The integer value that corresponds to this radio option
          * @return true if the active value changed as a result of user interaction
-         *
-         * Usage:
-         *   // single int stored by the application represents the selected value
-         *   if (ui.radio_button("Option A", &selectedIndex, 0)) {
-         *       // selection changed to value 0
-         *   }
          */
         virtual bool radio_button(const char* label, int* activeIndex, int value) = 0;
+        
+        /**
+         * @brief Add an image widget using a custom texture handle
+         * @param texture The handle returned from VulkanRenderer::RegisterTexture
+         * @param width Width in pixels
+         * @param height Height in pixels
+         */
+        virtual void image(void* texture_handle_ptr, float width, float height) = 0;
+        
+        /**
+         * @brief Add an image widget exactly centered in the available space.
+         * @param texture The handle returned from VulkanRenderer::RegisterTexture
+         * @param width Width in pixels
+         * @param height Height in pixels
+         * @param available_width The total available content width
+         * @param available_height The total available content height
+         */
+        virtual void image_centered(void* texture_handle_ptr, float width, float height, float available_width, float available_height) = 0;
         
         
         /**
@@ -272,6 +346,29 @@ namespace Spherical {
          * @brief Pop the last panel title text color override.
          */
         virtual void pop_panel_title_text_color() = 0;
+
+        /**
+         * @brief Push a panel title font style override.
+         * @note Must be balanced with pop_panel_title_font().
+         */
+        virtual void push_panel_title_font(FontStyle style) = 0;
+
+        /**
+         * @brief Pop the last panel title font style override.
+         */
+        virtual void pop_panel_title_font() = 0;
+
+        /**
+         * @brief Push a panel title bar padding override.
+         * @note Controls the extra space added around the title text, effectively changing title bar height.
+         *       Must be balanced with pop_panel_title_padding().
+         */
+        virtual void push_panel_title_padding(const UIVec2& padding) = 0;
+
+        /**
+         * @brief Pop the last panel title bar padding override.
+         */
+        virtual void pop_panel_title_padding() = 0;
 
         /**
          * @brief Push a radio button label text color override.
@@ -469,9 +566,16 @@ namespace Spherical {
 
         /**
          * @brief Get the current panel content bounds for the active panel.
-         * @note Valid between a successful begin_panel() and the matching end_panel().
+         * @return Bounding rectangle of the inner content area (ignoring borders and title bar)
          */
         virtual UIRect get_current_panel_content_bounds() const = 0;
+
+        /**
+         * @brief Check if the current panel is actively being moved or resized by the user.
+         * @return true if the panel is currently being dragged or resized.
+         * @note Must be called between begin_panel() and end_panel().
+         */
+        virtual bool is_current_panel_resizing() const = 0;
 
         /**
          * @brief Begin a workspace container (hierarchical panel docking host)
@@ -493,7 +597,7 @@ namespace Spherical {
          *   ui.end_workspace_container();  // Always call this
          * @endcode
          */
-        virtual bool begin_workspace_container(const char* title, int x, int y, int width, int height) = 0;
+        virtual bool begin_workspace_container(const char* title, int x, int y, int width, int height, PanelFlags flags = PanelFlags::None, const WorkspaceContainerStyle* style = nullptr) = 0;
 
         /**
          * @brief End the current workspace container

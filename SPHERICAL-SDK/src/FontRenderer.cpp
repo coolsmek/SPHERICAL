@@ -1,4 +1,4 @@
-﻿#include "FontRenderer.h"
+#include "FontRenderer.h"
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include <msdfgen/msdfgen.h>
@@ -22,8 +22,12 @@ namespace {
     constexpr float kPointsPerInch = 72.0f;
     
     //Font sizes
-    constexpr float kRegularPointSize = 11.0f;
+    constexpr float kSmallPointSize = 10.0f;
+    constexpr float kRegularPointSize = 12.0f;
     constexpr float kTitlePointSize = 13.0f;
+    
+    // Scale factor applied during atlas baking to increase glyph resolution without affecting logical UI size
+    constexpr float kBakeResolutionScale = 2.0f;
     
     constexpr float kMinimumDpiScale = 1.0f;
     constexpr float kMaximumDpiScale = 4.0f;
@@ -73,7 +77,7 @@ namespace {
     }
 
     uint32_t PointsToPixels(float points, float dpiScale) {
-        const float pixels = (points * (kReferenceDpi / kPointsPerInch)) * dpiScale;
+        const float pixels = (points * (kReferenceDpi / kPointsPerInch)) * dpiScale * kBakeResolutionScale;
         return std::max(kMinimumFontPixelSize, static_cast<uint32_t>(std::lround(pixels)));
     }
 
@@ -98,6 +102,7 @@ namespace {
 
     FT_Int32 GetHintingTarget(Spherical::FontStyle style) {
         switch (style) {
+            case Spherical::FontStyle::Small:
             case Spherical::FontStyle::Regular:
                 return FT_LOAD_TARGET_NORMAL;
             case Spherical::FontStyle::Title:
@@ -712,6 +717,7 @@ namespace FontRenderer {
         
         // Define our font styles in points and convert them to display-scaled pixels.
         g_fontState.fontSizes = {
+            {FontStyle::Small, PointsToPixels(kSmallPointSize, g_fontState.dpiScale)},
             {FontStyle::Regular, PointsToPixels(kRegularPointSize, g_fontState.dpiScale)},
             {FontStyle::Title, PointsToPixels(kTitlePointSize, g_fontState.dpiScale)}
         };
@@ -912,7 +918,7 @@ namespace FontRenderer {
             const uint32_t size = fontEntry.second;
             auto& font = g_fontState.fontHandles[style];
             g_fontState.fontStyleKeys[style] = style;
-            font.height = static_cast<float>(size);
+            font.height = static_cast<float>(size) / kBakeResolutionScale;
             font.width = NKTextWidthCallback;
             font.query = NKGlyphQueryCallback;
             font.texture = nk_handle_ptr(g_fontState.atlas.imageView);

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <vulkan/vulkan.h>
 
@@ -28,6 +28,11 @@ namespace Spherical {
         // --- Font texture ---
         // Wire the baked atlas into the renderer once after Init.
         void UpdateFontTexture(VkImageView atlasView);
+
+        // --- Custom Textures ---
+        // Register a custom texture to be used in UI elements, returns a descriptor set wrapped in nk_handle
+        nk_handle RegisterTexture(VkImageView imageView, VkSampler sampler = VK_NULL_HANDLE);
+        void FreeTexture(nk_handle texture);
 
         // --- Null texture handle (for Nuklear default) ---
         // Returns a handle to a 1x1 white texture for commands with no custom texture.

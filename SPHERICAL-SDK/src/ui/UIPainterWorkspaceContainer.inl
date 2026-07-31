@@ -1,10 +1,14 @@
 // Workspace Container / BSP Docking Implementation
 
 
-bool UIPainterImpl::begin_workspace_container(const char* title, int x, int y, int width, int height) {
+bool UIPainterImpl::begin_workspace_container(const char* title, int x, int y, int width, int height, Spherical::PanelFlags flags, const Spherical::WorkspaceContainerStyle* style) {
     if (m_ctx == nullptr || title == nullptr) {
         return false;
     }
+
+    const bool isLocked = (static_cast<uint32_t>(flags) & static_cast<uint32_t>(Spherical::PanelFlags::Locked)) != 0;
+    const bool noTitle = (static_cast<uint32_t>(flags) & static_cast<uint32_t>(Spherical::PanelFlags::NoTitle)) != 0;
+    const bool noPadding = (static_cast<uint32_t>(flags) & static_cast<uint32_t>(Spherical::PanelFlags::NoPadding)) != 0;
 
     constexpr float kMinWidth = 240.0f;
     constexpr float kMinHeight = 180.0f;
@@ -52,15 +56,26 @@ bool UIPainterImpl::begin_workspace_container(const char* title, int x, int y, i
     };
 
     WorkspaceContainerState& containerState = g_workspaceContainerStates[title];
-    if (!containerState.initialized) {
+    containerState.disallowUndock = (flags & Spherical::PanelFlags::NoUndock);
+    
+    if (flags & Spherical::PanelFlags::AutoMaximize) {
+        const float margin = 4.0f;
+        const float menuBarHeight = 26.0f;
+        
+        containerState.width = std::max(kMinWidth, static_cast<float>(m_framebufferExtent.width) - (margin * 2.0f));
+        containerState.height = std::max(kMinHeight, static_cast<float>(m_framebufferExtent.height) - menuBarHeight - (margin * 2.0f));
+        containerState.offsetFromCenterX = margin - centerX;
+        containerState.offsetFromCenterY = (menuBarHeight + margin) - centerY;
+        containerState.initialized = true;
+    } else if (!containerState.initialized || containerState.width <= kMinWidth || (flags & Spherical::PanelFlags::Locked)) {
         containerState.width = std::max(kMinWidth, static_cast<float>(width));
         containerState.height = std::max(kMinHeight, static_cast<float>(height));
-        containerState.offsetFromCenterX = static_cast<float>(x) - centerX;
-        containerState.offsetFromCenterY = static_cast<float>(y) - centerY;
+        containerState.offsetFromCenterX = static_cast<float>(x) - (containerState.width * 0.5f);
+        containerState.offsetFromCenterY = -static_cast<float>(y) - (containerState.height * 0.5f);
         containerState.initialized = true;
     }
 
-    const float predictedHeaderHeight = GetWindowHeaderHeight(m_ctx);
+    const float predictedHeaderHeight = noTitle ? 0.0f : GetWindowHeaderHeight(m_ctx);
     float minContainerWidth = kMinWidth;
     float minContainerHeight = kMinHeight;
     if (containerState.root != nullptr) {
@@ -227,7 +242,7 @@ bool UIPainterImpl::begin_workspace_container(const char* title, int x, int y, i
     }
 
     // Handle workspace container drag
-    if (g_panelDrag.active && g_panelDrag.windowTitle == title) {
+    if (!isLocked && g_panelDrag.active && g_panelDrag.windowTitle == title) {
         if (!IsLeftMouseDownAnywhere(m_ctx)) {
             g_panelDrag = {};
             SDL_CaptureMouse(false);
@@ -327,7 +342,7 @@ bool UIPainterImpl::begin_workspace_container(const char* title, int x, int y, i
         }
     }
 
-    if (g_panelDrag.active && g_panelDrag.windowTitle == title) {
+    if (!isLocked && g_panelDrag.active && g_panelDrag.windowTitle == title) {
         switch (g_panelDrag.mode) {
             case PanelDragMode::ResizeTopLeft:
             case PanelDragMode::ResizeBottomRight:
@@ -350,7 +365,7 @@ bool UIPainterImpl::begin_workspace_container(const char* title, int x, int y, i
             default:
                 break;
         }
-    } else if (preLayoutSplitterHit.node == nullptr) {
+    } else if (!isLocked && preLayoutSplitterHit.node == nullptr) {
         if (IsMouseInsideRect(m_ctx, topLeft) || IsMouseInsideRect(m_ctx, bottomRight)) {
             RequestCursor(CursorRequest::ResizeNwse);
         } else if (IsMouseInsideRect(m_ctx, topRight) || IsMouseInsideRect(m_ctx, bottomLeft)) {
@@ -362,7 +377,7 @@ bool UIPainterImpl::begin_workspace_container(const char* title, int x, int y, i
         }
     }
 
-    if (!g_panelDrag.active && !g_splitterDrag.active && preLayoutSplitterHit.node == nullptr && WasLeftMousePressed(m_ctx)) {
+    if (!isLocked && !g_panelDrag.active && !g_splitterDrag.active && preLayoutSplitterHit.node == nullptr && WasLeftMousePressed(m_ctx)) {
         PanelDragMode startMode = PanelDragMode::None;
         if (IsMouseInsideRect(m_ctx, topLeft)) {
             startMode = PanelDragMode::ResizeTopLeft;
@@ -423,11 +438,15 @@ bool UIPainterImpl::begin_workspace_container(const char* title, int x, int y, i
         }
     }
 
+    nk_flags windowFlags = NK_WINDOW_NO_SCROLLBAR | NK_WINDOW_NO_INPUT;
+    if (!noTitle) {
+        windowFlags |= NK_WINDOW_TITLE;
+    }
     const bool result = nk_begin(
         m_ctx,
         title,
         containerBounds,
-        NK_WINDOW_TITLE | NK_WINDOW_NO_SCROLLBAR | NK_WINDOW_NO_INPUT) != 0;
+        windowFlags) != 0;
 
     // During an active drag, use our computed bounds directly.
     // Outside of a drag, read back what Nuklear calculated.
@@ -642,37 +661,73 @@ bool UIPainterImpl::begin_workspace_container(const char* title, int x, int y, i
             draw_dashed_line(rect.x, rect.y + rect.h, rect.x, rect.y, color, thickness);
         };
 
-        const bool hasDockedPanels = (CountDockNodeLeaves(containerState.root.get()) > 0);
-        const bool undockAllHovered = IsMouseInsideRect(m_ctx, actualUndockAllButtonRect);
-        const nk_color undockAllFill = !hasDockedPanels ? nk_rgb(70, 74, 84)
-            : (undockAllHovered ? nk_rgb(185, 88, 72) : nk_rgb(145, 70, 58));
-        const nk_color undockAllBorder = !hasDockedPanels ? nk_rgb(95, 100, 114)
-            : nk_rgb(225, 180, 170);
+        if (!containerState.disallowUndock) {
+            const bool hasDockedPanels = (CountDockNodeLeaves(containerState.root.get()) > 0);
+            const bool undockAllHovered = IsMouseInsideRect(m_ctx, actualUndockAllButtonRect);
+            const nk_color undockAllFill = !hasDockedPanels ? nk_rgb(70, 74, 84)
+                : (undockAllHovered ? nk_rgb(185, 88, 72) : nk_rgb(145, 70, 58));
+            const nk_color undockAllBorder = !hasDockedPanels ? nk_rgb(95, 100, 114)
+                : nk_rgb(225, 180, 170);
 
-        nk_push_scissor(buffer, windowBounds);
-        nk_fill_rect(buffer, actualUndockAllButtonRect, 4.0f, undockAllFill);
-        nk_stroke_rect(buffer, actualUndockAllButtonRect, 4.0f, 1.0f, undockAllBorder);
+            nk_push_scissor(buffer, windowBounds);
+            nk_fill_rect(buffer, actualUndockAllButtonRect, 4.0f, undockAllFill);
+            nk_stroke_rect(buffer, actualUndockAllButtonRect, 4.0f, 1.0f, undockAllBorder);
 
-        if (m_ctx->style.font != nullptr) {
-            static const char* undockAllLabel = "Undock All";
-            nk_draw_text(
-                buffer,
-                actualUndockAllButtonRect,
-                undockAllLabel,
-                static_cast<int>(std::strlen(undockAllLabel)),
-                m_ctx->style.font,
-                nk_rgba(0, 0, 0, 0),
-                !hasDockedPanels ? nk_rgb(170, 176, 188) : nk_rgb(245, 245, 245)
-            );
+            if (m_ctx->style.font != nullptr) {
+                static const char* undockAllLabel = "Undock All";
+                nk_draw_text(
+                    buffer,
+                    actualUndockAllButtonRect,
+                    undockAllLabel,
+                    static_cast<int>(std::strlen(undockAllLabel)),
+                    m_ctx->style.font,
+                    nk_rgba(0, 0, 0, 0),
+                    !hasDockedPanels ? nk_rgb(170, 176, 188) : nk_rgb(245, 245, 245)
+                );
+            }
+
+            if (hasDockedPanels && WasLeftMousePressed(m_ctx) && IsMouseInsideRect(m_ctx, actualUndockAllButtonRect)) {
+                undock_all_panels_from_container(containerState, windowBounds);
+                m_ctx->input.mouse.buttons[NK_BUTTON_LEFT].clicked = 0;
+            }
         }
 
-        if (hasDockedPanels && WasLeftMousePressed(m_ctx) && IsMouseInsideRect(m_ctx, actualUndockAllButtonRect)) {
-            undock_all_panels_from_container(containerState, windowBounds);
-            m_ctx->input.mouse.buttons[NK_BUTTON_LEFT].clicked = 0;
+        nk_color outerColor = nk_rgb(145, 170, 205);
+        float outerThickness = 1.25f;
+        bool solidBorder = false;
+
+        if (style != nullptr) {
+            outerColor = nk_rgba_f(style->borderColor.r, style->borderColor.g, style->borderColor.b, style->borderColor.a);
+            outerThickness = style->borderThickness;
+            solidBorder = style->solidBorder;
         }
 
-        draw_dashed_rect(actualHeaderRect, nk_rgb(130, 150, 176), 1.0f);
-        draw_dashed_rect(windowBounds, nk_rgb(145, 170, 205), 1.25f);
+        if (!solidBorder) {
+            draw_dashed_rect(actualHeaderRect, nk_rgb(130, 150, 176), 1.0f);
+        }
+
+        struct nk_rect borderRect = windowBounds;
+        
+        // 1 pixel offset gap + half thickness to force stroke to grow entirely outwards
+        const float expansion = 1.0f + (outerThickness * 0.5f);
+        borderRect.x -= expansion;
+        borderRect.y -= expansion;
+        borderRect.w += expansion * 2.0f;
+        borderRect.h += expansion * 2.0f;
+
+        // Push a scissor large enough to fit the expanded borderRect so Nuklear doesn't clip it
+        struct nk_rect clipRect = borderRect;
+        clipRect.x -= outerThickness;
+        clipRect.y -= outerThickness;
+        clipRect.w += outerThickness * 2.0f;
+        clipRect.h += outerThickness * 2.0f;
+        nk_push_scissor(buffer, clipRect);
+
+        if (solidBorder) {
+            nk_stroke_rect(buffer, borderRect, 0.0f, outerThickness, outerColor);
+        } else {
+            draw_dashed_rect(borderRect, outerColor, outerThickness);
+        }
         nk_push_scissor(buffer, actualBodyRect);
 
         if (containerState.root == nullptr && actualBodyRect.w > 40.0f && actualBodyRect.h > 24.0f) {

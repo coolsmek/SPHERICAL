@@ -5,6 +5,5 @@ layout(location = 1) in vec4 inColor;
 layout(location = 0) out vec4 outColor;
 void main() {
     vec4 texel = texture(uiTexture, inUV);
-    float mask = texel.r;
-    outColor = vec4(inColor.rgb * mask, inColor.a * mask);
+    outColor = texel * inColor;
 }
